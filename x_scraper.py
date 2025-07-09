@@ -2,27 +2,35 @@
 # -*- coding: utf-8 -*-
 """
 X (Twitter) 帖子爬虫工具
-基于 twikit 库，支持获取推文详情、用户时间线、关键词搜索、评论回复。
-输出 JSON 格式，包含原帖内容、评论、点赞数、转发数和引用数。
+基于 Selenium + Chrome，模拟真实浏览器操作，抓取推文详情、用户时间线、关键词搜索、评论回复。
+输出 CSV 格式，UTF-8 编码。
 
 使用示例:
-  python3 x_scraper.py tweet 1234567890
+  python3 x_scraper.py tweet 1903791436349997063
   python3 x_scraper.py timeline elonmusk --count 50
   python3 x_scraper.py search "python" --count 20
-  python3 x_scraper.py replies 1234567890 --count 30
+  python3 x_scraper.py replies 1903791436349997063 --count 30
   python3 x_scraper.py config
 """
 
 import argparse
-import asyncio
+import csv
 import json
 import os
 import random
+import re
 import sys
 import time
 import traceback
-from collections import OrderedDict
 from datetime import datetime, timezone
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
 
 # ============================================================
@@ -45,23 +53,11 @@ def get_config(config_path="config.json"):
         sys.exit(1)
 
 
-def format_datetime(dt):
-    """将 twikit 返回的时间对象转换为 ISO 8601 字符串。"""
-    if dt is None:
-        return None
-    try:
-        if isinstance(dt, str):
-            return dt
-        return dt.isoformat()
-    except Exception:
-        return str(dt)
-
-
 def print_banner():
     """打印程序横幅。"""
     print("=" * 50)
     print("  X (Twitter) 帖子爬虫工具")
-    print("  基于 twikit 库")
+    print("  基于 Selenium + Chrome")
     print("=" * 50)
     print()
 
@@ -89,15 +85,61 @@ def safe_get(obj, attr, default=None):
         return default
 
 
+def safe_find(element, selector, by=By.CSS_SELECTOR, default=None):
+    """安全查找子元素，不存在时返回默认值。"""
+    try:
+        return element.find_element(by, selector)
+    except Exception:
+        return default
+
+
+def safe_text(element, selector=None, default=""):
+    """安全获取元素文本。"""
+    try:
+        if selector:
+            el = element.find_element(By.CSS_SELECTOR, selector)
+        else:
+            el = element
+        return el.text.strip() if el else default
+    except Exception:
+        return default
+
+
+def parse_count(text):
+    """将 '1.2K' / '3.4M' / '123' 等文本解析为整数。"""
+    if not text:
+        return 0
+    text = text.strip().lower().replace(",", "")
+    try:
+        if "k" in text:
+            return int(float(text.replace("k", "")) * 1000)
+        elif "m" in text:
+            return int(float(text.replace("m", "")) * 1000000)
+        elif "b" in text:
+            return int(float(text.replace("b", "")) * 1000000000)
+        else:
+            return int(float(text))
+    except (ValueError, TypeError):
+        return 0
+
+
+def parse_datetime(time_element):
+    """从 <time datetime='...'> 元素提取 ISO 时间字符串。"""
+    if time_element is None:
+        return ""
+    dt_attr = time_element.get_attribute("datetime")
+    return dt_attr if dt_attr else ""
+
+
 # ============================================================
 #  RateLimiter 类 - 统一请求限流控制器
 # ============================================================
 
 class RateLimiter:
-    """统一请求限流器
+    """统一请求限流器（同步版）
 
     三层节奏控制：
-    1. 请求级 — 每次 API 调用前强制等待固定间隔 + 随机抖动
+    1. 请求级 — 每次操作前强制等待固定间隔 + 随机抖动
     2. 批次级 — 连续请求达到阈值后触发长暂停，模拟人类行为
     3. 异常级 — 触发平台限流后进入冷却期，大幅降低请求频率
     """
@@ -113,14 +155,13 @@ class RateLimiter:
 
         self._last_request = 0.0
         self._request_count = 0
-        self._in_cooldown = False
 
     @property
     def request_count(self):
         return self._request_count
 
-    async def wait(self, label="请求"):
-        """每次网络请求前调用，自动计算并等待合适间隔"""
+    def wait(self, label="操作"):
+        """每次操作前调用，自动计算并等待合适间隔。"""
         if self._last_request > 0:
             elapsed = time.time() - self._last_request
             jitter = random.uniform(0, self.max_interval - self.min_interval)
@@ -130,59 +171,46 @@ class RateLimiter:
                 delay = required - elapsed
                 print(f"  ⏳ [{label}] 等待 {delay:.1f}s "
                       f"(固定间隔={self.min_interval}s + 随机={jitter:.1f}s)")
-                await asyncio.sleep(delay)
+                time.sleep(delay)
 
         self._last_request = time.time()
         self._request_count += 1
 
-    async def batch_pause(self):
-        """每批次请求后长暂停，模拟人类休息"""
+    def batch_pause(self):
+        """每批次请求后长暂停，模拟人类休息。"""
         if self._request_count > 0 and self._request_count % self.batch_size == 0:
-            print(f"  🛑 已完成 {self._request_count} 次请求，"
+            print(f"  🛑 已完成 {self._request_count} 次操作，"
                   f"长暂停 {self.long_pause}s 模拟人类行为...")
-            await asyncio.sleep(self.long_pause)
+            time.sleep(self.long_pause)
 
-    async def cooldown(self):
-        """触发平台限流后的强制冷却"""
-        self._in_cooldown = True
+    def cooldown(self):
+        """触发平台限流后的强制冷却。"""
         print(f"  🚫 触发限流保护，强制冷却 {self.cooldown_seconds}s...")
-        await asyncio.sleep(self.cooldown_seconds)
-        self._in_cooldown = False
+        time.sleep(self.cooldown_seconds)
         self._request_count = 0
 
-    async def retry_with_backoff(self, coro_func, label="操作"):
-        """带指数退避的重试执行，检测到限流自动冷却"""
-        last_error = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                return await coro_func()
-            except Exception as e:
-                last_error = e
-                msg = str(e).lower()
-
-                if any(kw in msg for kw in ["rate limit", "too many", "429"]):
-                    print(f"  ⚠ [{label}] 触发平台限流")
-                    await self.cooldown()
-                elif attempt < self.max_retries:
-                    delay = 2 ** attempt  # 2, 4, 8
-                    print(f"  ⚠ [{label}] 失败，{delay}s 后重试 "
-                          f"({attempt}/{self.max_retries})")
-                    await asyncio.sleep(delay)
-                else:
-                    raise
-
-        raise last_error
-
 
 # ============================================================
-#  XScraper 类
+#  SeleniumScraper 类
 # ============================================================
 
-class XScraper:
+class SeleniumScraper:
     """X (Twitter) 帖子爬虫
 
-    负责登录认证、数据抓取、格式转换和结果输出。
+    使用 Selenium WebDriver 控制 Chrome 浏览器，
+    模拟真实用户操作，从页面 DOM 中提取推文数据。
     """
+
+    # ---- X.com DOM 选择器 ----
+    TWEET_SELECTOR = 'article[data-testid="tweet"]'
+    TEXT_SELECTOR = '[data-testid="tweetText"]'
+    USER_LINK_SELECTOR = 'a[role="link"]'
+    TIME_SELECTOR = "time"
+    PHOTO_SELECTOR = '[data-testid="tweetPhoto"]'
+    LIKE_SELECTOR = '[data-testid="like"]'
+    RETWEET_SELECTOR = '[data-testid="retweet"]'
+    REPLY_SELECTOR = '[data-testid="reply"]'
+    QUOTE_SELECTOR = '[data-testid="quote"]'
 
     def __init__(self, config):
         self.config = config
@@ -191,549 +219,596 @@ class XScraper:
         # 输出目录
         self.output_dir = config.get("output", {}).get("directory", "x_output")
         if not os.path.isabs(self.output_dir):
-            # 相对于脚本所在目录
             script_dir = os.path.dirname(os.path.realpath(__file__))
             self.output_dir = os.path.join(script_dir, self.output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # 统一限流器
+        # 限流器
         self.rate_limiter = RateLimiter(config)
 
-        # 收集追踪
+        # Selenium 配置
+        self.selenium_cfg = config.get("selenium", {})
+        self.headless = self.selenium_cfg.get("headless", False)
+        self.page_timeout = self.selenium_cfg.get("page_load_timeout", 60)
+        self.scroll_pause = self.selenium_cfg.get("scroll_pause_seconds", 3)
+
+        # 去重 & 计数
         self.got_count = 0
         self.skipped_count = 0
-        self.tweet_ids = set()  # 去重
+        self.tweet_ids = set()
 
-        # twikit Client 延迟初始化
-        self.client = None
+        # Driver 延迟初始化
+        self.driver = None
 
     # ----- 配置校验 -----
 
     def validate_config(self, config):
-        """校验配置文件必填字段，不合法则退出。"""
         if "auth" not in config:
             print("✗ 配置文件缺少 'auth' 字段")
             sys.exit(1)
 
-    # ----- 认证 -----
+    # ----- WebDriver 初始化 -----
 
-    async def login(self):
-        """登录 X 平台。优先使用 Cookie 文件，其次使用账号密码。"""
-        from twikit import Client
+    def _init_driver(self):
+        """创建并配置 Chrome WebDriver。"""
+        options = Options()
 
-        self.client = Client(language="en-US")
-        auth = self.config.get("auth", {})
+        # 反自动化检测
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
 
-        # 优先尝试 Cookie 文件
-        cookies_file = auth.get("cookies_file", "")
-        if cookies_file and os.path.isfile(cookies_file):
-            try:
-                print(f"正在从 Cookie 文件加载: {cookies_file}")
-                self.client.load_cookies(cookies_file)
-                print("✓ Cookie 登录成功")
-                # 测试登录是否有效
-                await self.client.user_id()
-                return
-            except Exception as e:
-                print(f"⚠ Cookie 登录失败: {e}")
-                print("  尝试使用账号密码登录...")
-
-        # 回退到账号密码登录
-        username = auth.get("username", "")
-        email = auth.get("email", "")
-        password = auth.get("password", "")
-
-        if not username or not password:
-            print("✗ 认证信息不足，请配置以下任一方式：")
-            print("  1) cookies_file: 浏览器导出的 Cookie JSON 文件（推荐）")
-            print("  2) username + email + password: X 账号密码")
-            print()
-            print("  获取 Cookie 的方法：")
-            print("  - 在浏览器中登录 x.com")
-            print("  - 打开开发者工具 → Application → Cookies")
-            print("  - 导出为 JSON 格式，保存为 x_cookies.json")
-            sys.exit(1)
-
-        try:
-            print(f"正在登录账号: {username}")
-            await self.client.login(
-                auth_info_1=username,
-                auth_info_2=email,
-                password=password,
-            )
-            print("✓ 账号密码登录成功")
-
-            # 登录成功后保存 Cookie 以便下次使用
-            if cookies_file:
-                self.client.save_cookies(cookies_file)
-                print(f"✓ Cookie 已保存到: {cookies_file}")
-
-        except Exception as e:
-            print(f"✗ 登录失败: {e}")
-            print("  请检查账号、邮箱和密码是否正确")
-            traceback.print_exc()
-            sys.exit(1)
-
-    # ----- 数据转换 -----
-
-    def _convert_user_to_dict(self, user):
-        """将 twikit User 对象转换为有序字典。"""
-        if user is None:
-            return None
-
-        return OrderedDict([
-            ("id", safe_get(user, "id")),
-            ("screen_name", safe_get(user, "screen_name")),
-            ("name", safe_get(user, "name")),
-            ("description", safe_get(user, "description")),
-            ("followers_count", safe_get(user, "followers_count")),
-            ("friends_count", safe_get(user, "friends_count")),
-            ("statuses_count", safe_get(user, "statuses_count")),
-            ("profile_image_url", safe_get(user, "profile_image_url")),
-            ("verified", safe_get(user, "verified")),
-            ("location", safe_get(user, "location")),
-        ])
-
-    def _convert_media_to_list(self, media_list):
-        """将 twikit Media 对象列表转换为字典列表。"""
-        if not media_list:
-            return []
-
-        result = []
-        for m in media_list:
-            media_type = type(m).__name__ if m else "Unknown"
-            item = OrderedDict([
-                ("type", media_type),
-            ])
-            # 尝试获取常见属性
-            for attr in ("url", "media_url_https", "expanded_url",
-                         "display_url", "preview_url"):
-                val = safe_get(m, attr)
-                if val:
-                    item["url"] = val
-                    break
-            # 视频特有属性
-            duration = safe_get(m, "duration")
-            if duration:
-                item["duration_ms"] = duration
-            result.append(item)
-        return result
-
-    def _convert_tweet_to_dict(self, tweet, include_quoted=True):
-        """将 twikit Tweet 对象转换为有序字典。
-
-        Args:
-            tweet: twikit Tweet 对象
-            include_quoted: 是否递归转换引用/转发的推文
-        """
-        if tweet is None:
-            return None
-
-        tweet_id = str(safe_get(tweet, "id", ""))
-
-        # 基础字段
-        result = OrderedDict()
-        result["id"] = tweet_id
-        result["text"] = safe_get(tweet, "full_text") or safe_get(tweet, "text", "")
-        result["created_at"] = format_datetime(safe_get(tweet, "created_at"))
-        result["lang"] = safe_get(tweet, "lang", "")
-
-        # 回复 / 引用标记
-        in_reply_to = safe_get(tweet, "in_reply_to")
-        result["is_reply"] = in_reply_to is not None and in_reply_to != ""
-        result["in_reply_to"] = in_reply_to
-
-        is_quote = safe_get(tweet, "is_quote_status")
-        result["is_quote_status"] = is_quote if is_quote is not None else False
-
-        # 作者信息
-        user = safe_get(tweet, "user")
-        result["author"] = self._convert_user_to_dict(user)
-
-        # 互动数据
-        result["metrics"] = OrderedDict([
-            ("favorite_count", safe_get(tweet, "favorite_count", 0)),
-            ("retweet_count", safe_get(tweet, "retweet_count", 0)),
-            ("reply_count", safe_get(tweet, "reply_count", 0)),
-            ("quote_count", safe_get(tweet, "quote_count", 0)),
-            ("view_count", safe_get(tweet, "view_count", 0)),
-            ("bookmark_count", safe_get(tweet, "bookmark_count", 0)),
-        ])
-
-        # 话题标签
-        hashtags = safe_get(tweet, "hashtags", [])
-        result["hashtags"] = [safe_get(h, "text", str(h)) for h in (hashtags or [])]
-
-        # 链接
-        urls = safe_get(tweet, "urls", [])
-        result["urls"] = [safe_get(u, "expanded_url") or safe_get(u, "url", str(u))
-                          for u in (urls or [])]
-
-        # 媒体
-        media = safe_get(tweet, "media", [])
-        result["media"] = self._convert_media_to_list(media)
-
-        # 引用推文（递归）
-        if include_quoted:
-            quoted = safe_get(tweet, "quote")
-            if quoted:
-                result["quoted_tweet"] = self._convert_tweet_to_dict(
-                    quoted, include_quoted=False
-                )
-
-            retweeted = safe_get(tweet, "retweeted_tweet")
-            if retweeted:
-                result["retweeted_tweet"] = self._convert_tweet_to_dict(
-                    retweeted, include_quoted=False
-                )
-
-        # 文章来源标识
-        result["source"] = safe_get(tweet, "source", "")
-
-        return result
-
-    # ----- 数据抓取 -----
-
-    async def fetch_tweet(self, tweet_id, include_replies=False):
-        """获取单条推文详情。
-
-        Args:
-            tweet_id: 推文 ID
-            include_replies: 是否同时获取回复列表
-
-        Returns:
-            推文字典（包含 replies 列表，如果 include_replies=True）
-        """
-        async def _get():
-            return await self.client.get_tweet_by_id(tweet_id)
-
-        print(f"正在获取推文 {tweet_id} ...")
-        await self.rate_limiter.wait(label=f"获取推文 {tweet_id}")
-        tweet = await self.rate_limiter.retry_with_backoff(
-            _get, label=f"获取推文 {tweet_id}"
+        # 移动端 User-Agent（社交平台对移动端限制更宽松）
+        options.add_argument(
+            "--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         )
 
-        result = self._convert_tweet_to_dict(tweet)
-        print(f"  ✓ 获取成功: @{result['author']['screen_name']}")
-        print(f"    内容: {result['text'][:80]}..."
-              if len(result['text']) > 80 else f"    内容: {result['text']}")
-        print(f"    点赞: {result['metrics']['favorite_count']}  "
-              f"转发: {result['metrics']['retweet_count']}  "
-              f"回复: {result['metrics']['reply_count']}  "
-              f"引用: {result['metrics']['quote_count']}")
+        # 窗口尺寸（模拟手机屏幕）
+        options.add_argument("--window-size=390,844")
 
-        self.got_count += 1
+        if self.headless:
+            options.add_argument("--headless=new")
 
-        # 获取回复
-        if include_replies:
-            replies = await self._fetch_replies_for_tweet(tweet)
-            result["replies"] = replies
-
-        return result
-
-    async def _fetch_replies_for_tweet(self, tweet):
-        """获取某条推文的回复列表。"""
-        replies = []
-        try:
-            reply_result = safe_get(tweet, "replies")
-            if reply_result is None:
-                return replies
-
-            page_count = 0
-            while reply_result is not None:
-                page_count += 1
-                for reply in (reply_result or []):
-                    d = self._convert_tweet_to_dict(reply)
-                    if d and d["id"] not in self.tweet_ids:
-                        self.tweet_ids.add(d["id"])
-                        replies.append(d)
-
-                # 获取下一页
-                try:
-                    await self.rate_limiter.wait(label=f"回复翻页{page_count}")
-                    reply_result = await reply_result.next()
-                    await self.rate_limiter.batch_pause()
-                except Exception:
-                    break
-
-        except Exception as e:
-            print(f"  ⚠ 获取回复时出错: {e}")
-            traceback.print_exc()
-
-        if replies:
-            print(f"  ✓ 获取到 {len(replies)} 条回复")
-        return replies
-
-    async def _paginate(self, result, count, label="推文"):
-        """通用的游标分页逻辑。
-
-        Args:
-            result: twikit Result 对象
-            count: 目标获取数量
-            label: 显示标签
-
-        Returns:
-            推文字典列表
-        """
-        tweets = []
-        page_count = 0
-
-        while result is not None and len(tweets) < count:
-            page_count += 1
-            page_items = list(result) if result else []
-
-            if not page_items:
-                break
-
-            for tweet in page_items:
-                d = self._convert_tweet_to_dict(tweet)
-                if d and d["id"] not in self.tweet_ids:
-                    self.tweet_ids.add(d["id"])
-                    tweets.append(d)
-                    if len(tweets) >= count:
-                        break
-
-            if len(tweets) >= count:
-                break
-
-            print(f"  已获取 {len(tweets)}/{count} 条{label} (第 {page_count} 页)")
-
-            # 获取下一页
-            try:
-                await self.rate_limiter.wait(label=f"{label}翻页{page_count}")
-                result = await result.next()
-                await self.rate_limiter.batch_pause()
-            except Exception as e:
-                print(f"  ⚠ 翻页时出错: {e}")
-                break
-
-        return tweets
-
-    async def fetch_user_timeline(self, screen_name, count=20):
-        """获取指定用户的最新推文。
-
-        Args:
-            screen_name: 用户 screen name（@后面的部分）
-            count: 获取数量
-        """
-        # 先获取用户信息
-        async def _get_user():
-            return await self.client.get_user_by_screen_name(screen_name)
-
-        print(f"正在查找用户 @{screen_name} ...")
-        await self.rate_limiter.wait(label=f"查找用户")
-        try:
-            user = await self.rate_limiter.retry_with_backoff(
-                _get_user, label=f"查找用户 @{screen_name}"
-            )
-        except Exception:
-            print(f"✗ 用户 @{screen_name} 不存在或无法访问")
-            return []
-
-        user_dict = self._convert_user_to_dict(user)
-        print(f"  ✓ 找到用户: {user_dict['name']} (@{user_dict['screen_name']})")
-        print(f"    关注者: {user_dict['followers_count']}  "
-              f"发帖数: {user_dict['statuses_count']}")
-
-        # 获取推文
-        async def _get_tweets():
-            return await self.client.get_user_tweets(
-                user.id, "Tweets", count=min(count, 40)
-            )
-
-        print(f"正在获取 @{screen_name} 的推文 (目标 {count} 条)...")
-        await self.rate_limiter.wait(label=f"获取用户推文")
-        try:
-            result = await self.rate_limiter.retry_with_backoff(
-                _get_tweets, label=f"获取 @{screen_name} 推文"
-            )
-        except Exception as e:
-            print(f"✗ 获取推文失败: {e}")
-            traceback.print_exc()
-            return []
-
-        tweets = await self._paginate(result, count, label="推文")
-
-        self.got_count += len(tweets)
-        return tweets
-
-    async def fetch_search_tweets(self, query, count=20, product="Latest"):
-        """根据关键词搜索推文。
-
-        Args:
-            query: 搜索关键词
-            count: 获取数量
-            product: 搜索类型 ("Latest" / "Top" / "Media")
-        """
-        async def _search():
-            return await self.client.search_tweet(
-                query, product, count=min(count, 20)
-            )
-
-        print(f"正在搜索: \"{query}\" (类型: {product}, 目标: {count} 条)...")
-        await self.rate_limiter.wait(label=f"搜索")
-        try:
-            result = await self.rate_limiter.retry_with_backoff(
-                _search, label=f"搜索 \"{query}\""
-            )
-        except Exception as e:
-            print(f"✗ 搜索失败: {e}")
-            traceback.print_exc()
-            return []
-
-        tweets = await self._paginate(result, count, label="推文")
-
-        self.got_count += len(tweets)
-        return tweets
-
-    async def fetch_tweet_replies(self, tweet_id, count=20):
-        """获取指定推文的回复列表。
-
-        Args:
-            tweet_id: 推文 ID
-            count: 获取数量
-        """
-        async def _get():
-            return await self.client.get_tweet_by_id(tweet_id)
-
-        print(f"正在获取推文 {tweet_id} 及其回复...")
-        await self.rate_limiter.wait(label=f"获取推文 {tweet_id}")
-        tweet = await self.rate_limiter.retry_with_backoff(
-            _get, label=f"获取推文 {tweet_id}"
-        )
-
-        # 先添加原推文
-        original = self._convert_tweet_to_dict(tweet)
-        self.tweet_ids.add(original["id"])
-        original["is_original"] = True
-
-        # 获取回复
-        replies = []
-        try:
-            reply_result = safe_get(tweet, "replies")
-            if reply_result is not None:
-                replies = await self._paginate(
-                    reply_result, count, label="回复"
-                )
-                for r in replies:
-                    r["is_original"] = False
-        except Exception as e:
-            print(f"  ⚠ 获取回复时出错: {e}")
-            traceback.print_exc()
-
-        # 合并结果：原帖 + 回复
-        all_tweets = [original] + replies
-        self.got_count += len(all_tweets)
-
-        print(f"  ✓ 原帖 + {len(replies)} 条回复")
-
-        return all_tweets
-
-    # ----- 输出 -----
-
-    def export_json(self, data, output_path, meta=None):
-        """将数据导出为 JSON 文件。
-
-        Args:
-            data: 推文列表或单个推文字典
-            output_path: 输出文件路径
-            meta: 元数据字典
-        """
-        if meta is None:
-            meta = {}
-
-        meta.update({
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "source": "x_scraper",
-            "total_count": len(data) if isinstance(data, list) else 1,
+        # 其他优化
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-notifications")
+        options.add_argument("--disable-logging")
+        options.add_experimental_option("prefs", {
+            "profile.default_content_setting_values.notifications": 2,
+            "credentials_enable_service": False,
         })
 
-        output = OrderedDict([
-            ("meta", meta),
-            ("tweets", data),
-        ])
+        service = Service(ChromeDriverManager().install())
+        self.driver = webdriver.Chrome(service=service, options=options)
+        self.driver.set_page_load_timeout(self.page_timeout)
+        self.driver.implicitly_wait(5)
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(output, f, ensure_ascii=False, indent=2)
+    # ----- 认证 -----
+
+    def login(self):
+        """导航到 x.com 并注入 Cookie 完成认证。"""
+        self._init_driver()
+        auth = self.config.get("auth", {})
+
+        cookies_file = auth.get("cookies_file", "")
+        if not cookies_file or not os.path.isfile(cookies_file):
+            print("✗ Cookie 文件不存在或未配置")
+            print(f"  请在 config.json 的 auth.cookies_file 中指定 Cookie 文件路径")
+            self.driver.quit()
+            sys.exit(1)
+
+        print(f"正在加载 Cookie: {cookies_file}")
+        with open(cookies_file, "r", encoding="utf-8") as f:
+            cookies = json.load(f)
+
+        # 先访问 x.com 建立域名上下文（带重试）
+        print("正在访问 x.com ...")
+        for attempt in range(3):
+            try:
+                self.driver.get("https://x.com")
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"  ⚠ 页面加载超时，重试 ({attempt+1}/3)...")
+                    time.sleep(5)
+                else:
+                    raise
+        time.sleep(3)
+
+        # 注入 Cookie
+        if isinstance(cookies, dict):
+            for name, value in cookies.items():
+                try:
+                    self.driver.add_cookie({"name": name, "value": value})
+                except Exception as e:
+                    print(f"  ⚠ 添加 Cookie '{name}' 失败: {e}")
+        elif isinstance(cookies, list):
+            for cookie in cookies:
+                try:
+                    self.driver.add_cookie(cookie)
+                except Exception as e:
+                    print(f"  ⚠ 添加 Cookie 失败: {e}")
+
+        # 刷新页面使 Cookie 生效
+        print("正在刷新验证登录状态...")
+        for attempt in range(3):
+            try:
+                self.driver.get("https://x.com")
+                break
+            except Exception:
+                if attempt < 2:
+                    print(f"  ⚠ 页面加载超时，重试 ({attempt+1}/3)...")
+                    time.sleep(5)
+                else:
+                    print("  ⚠ 页面加载较慢，继续尝试...")
+        time.sleep(3)
+
+        # 简单校验
+        page_source = self.driver.page_source
+        if "Sign in" in page_source or "login" in self.driver.current_url.lower():
+            print("⚠ 可能未成功登录，请检查 Cookie 是否有效")
+        else:
+            print("✓ Cookie 登录成功")
+
+    # ----- 滚动加载 -----
+
+    def _scroll_to_load(self, target_count, label="推文", max_scrolls=50):
+        """滚动页面加载更多推文，直到达到目标数量或无法加载更多。"""
+        tweet_elements = []
+        last_count = 0
+        stale_count = 0
+
+        for scroll_num in range(max_scrolls):
+            # 获取当前所有推文元素
+            tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
+            current_count = len(tweet_elements)
+
+            if current_count >= target_count:
+                print(f"  已加载 {current_count} 个推文元素 (目标 {target_count})")
+                break
+
+            if current_count == last_count:
+                stale_count += 1
+                if stale_count >= 3:
+                    print(f"  连续 {stale_count} 次无新内容，停止滚动")
+                    break
+            else:
+                stale_count = 0
+                print(f"  已加载 {current_count} 个推文元素 (目标 {target_count})")
+
+            last_count = current_count
+
+            # 限流等待
+            self.rate_limiter.wait(label=f"{label}滚动{scroll_num+1}")
+
+            # 滚动到底部
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(self.scroll_pause)
+
+            # 批次长暂停
+            self.rate_limiter.batch_pause()
+
+        return tweet_elements[:target_count]
+
+    # ----- 推文数据提取 -----
+
+    def _extract_tweet(self, article_el):
+        """从 article DOM 元素中提取推文数据字典。
+
+        Args:
+            article_el: Selenium WebElement (<article>)
+
+        Returns:
+            dict 或 None（无法解析时）
+        """
+        try:
+            # --- 推文链接 & ID ---
+            links = article_el.find_elements(By.CSS_SELECTOR, 'a[href*="/status/"]')
+            tweet_url = ""
+            tweet_id = ""
+            for link in links:
+                href = link.get_attribute("href") or ""
+                match = re.search(r"/status/(\d+)", href)
+                if match:
+                    tweet_id = match.group(1)
+                    tweet_url = href
+                    break
+
+            if not tweet_id:
+                return None  # 无法提取 ID 的推文跳过
+
+            # --- 文本 ---
+            text_el = safe_find(article_el, self.TEXT_SELECTOR)
+            text = text_el.text.strip() if text_el else ""
+
+            # --- 时间 ---
+            time_el = safe_find(article_el, self.TIME_SELECTOR)
+            created_at = parse_datetime(time_el)
+
+            # --- 作者信息 ---
+            author_name = ""
+            author_handle = ""
+            # 从 UserAvatar 容器提取 screen_name
+            avatar_containers = article_el.find_elements(
+                By.CSS_SELECTOR, '[data-testid^="UserAvatar-Container-"]'
+            )
+            if avatar_containers:
+                testid = avatar_containers[0].get_attribute("data-testid") or ""
+                author_handle = testid.replace("UserAvatar-Container-", "")
+
+            # 从用户链接提取显示名称
+            if author_handle:
+                user_links = article_el.find_elements(By.CSS_SELECTOR, f'a[href="/{author_handle}"]')
+                for ulink in user_links:
+                    aria_label = ulink.get_attribute("aria-label") or ""
+                    if aria_label and not aria_label.startswith("@"):
+                        author_name = aria_label
+                        break
+                    link_text = ulink.text.strip()
+                    if link_text and not link_text.startswith("@"):
+                        author_name = link_text
+                        break
+
+            if not author_name and author_handle:
+                for link in article_el.find_elements(By.CSS_SELECTOR, 'a[role="link"]'):
+                    href = link.get_attribute("href") or ""
+                    if f"/{author_handle}" in href:
+                        inner_text = link.text.strip()
+                        if inner_text and not inner_text.startswith("@") and len(inner_text) < 100:
+                            author_name = inner_text
+                            break
+
+            if not author_name:
+                author_name = author_handle
+
+            # --- 互动数据 ---
+            metrics = self._extract_metrics(article_el)
+
+            # --- 话题标签 ---
+            hashtags = []
+            if text:
+                hashtags = re.findall(r"#(\w+)", text)
+
+            # --- 链接 ---
+            urls = []
+            url_links = article_el.find_elements(By.CSS_SELECTOR, 'a[href*="http"]')
+            for ul in url_links:
+                href = ul.get_attribute("href") or ""
+                if "x.com" not in href and "twitter.com" not in href:
+                    urls.append(href)
+
+            # --- 媒体 ---
+            photos = article_el.find_elements(By.CSS_SELECTOR, self.PHOTO_SELECTOR)
+            media_count = len(photos)
+
+            # --- 是否回复 ---
+            is_reply = "Replying to" in text or bool(
+                safe_find(article_el, '[data-testid="socialContext"]')
+            )
+
+            return {
+                "id": tweet_id,
+                "text": text.replace("\n", " "),
+                "created_at": created_at,
+                "author_name": author_name,
+                "author_handle": author_handle,
+                "favorite_count": metrics.get("like", 0),
+                "retweet_count": metrics.get("retweet", 0),
+                "reply_count": metrics.get("reply", 0),
+                "quote_count": metrics.get("quote", 0),
+                "view_count": metrics.get("view", 0),
+                "hashtags": ",".join(hashtags),
+                "urls": "|".join(urls[:5]),
+                "media_count": media_count,
+                "is_reply": is_reply,
+                "tweet_url": tweet_url,
+            }
+
+        except Exception as e:
+            print(f"  ⚠ 提取推文数据时出错: {e}")
+            return None
+
+    def _extract_metrics(self, article_el):
+        """提取推文的互动数据（点赞/转发/回复/引用/查看）。"""
+        metrics = {}
+
+        # 主方案：从 role="group" 的 aria-label 解析
+        # 格式："392 replies, 122 reposts, 767 likes, 30 bookmarks, 442408 views"
+        group_el = safe_find(article_el, 'div[role="group"]')
+        aria_label = group_el.get_attribute("aria-label") if group_el else ""
+
+        if aria_label:
+            reply_match = re.search(r"(\d[\d,]*)\s*repl", aria_label)
+            repost_match = re.search(r"(\d[\d,]*)\s*repo", aria_label)
+            like_match = re.search(r"(\d[\d,]*)\s*lik", aria_label)
+            view_match = re.search(r"(\d[\d,]*)\s*vie", aria_label)
+
+            if reply_match:
+                metrics["reply"] = int(reply_match.group(1).replace(",", ""))
+            if repost_match:
+                metrics["retweet"] = int(repost_match.group(1).replace(",", ""))
+            if like_match:
+                metrics["like"] = int(like_match.group(1).replace(",", ""))
+            if view_match:
+                metrics["view"] = int(view_match.group(1).replace(",", ""))
+
+        # Fallback: 从独立按钮 aria-label 解析
+        if not metrics:
+            for sel, keyword in [
+                ('button[data-testid="reply"]', "repl"),
+                ('button[data-testid="retweet"]', "repo"),
+                ('button[data-testid="like"]', "lik"),
+            ]:
+                btn = safe_find(article_el, sel)
+                if btn:
+                    label = btn.get_attribute("aria-label") or ""
+                    match = re.search(r"(\d[\d,]*)", label)
+                    if not match:
+                        continue
+                    val = int(match.group(1).replace(",", ""))
+                    if "reply" in keyword:
+                        metrics["reply"] = val
+                    elif "repo" in keyword:
+                        metrics["retweet"] = val
+                    elif "lik" in keyword:
+                        metrics["like"] = val
+
+        return metrics
+
+    # ----- 页面导航（带重试） -----
+
+    def _navigate(self, url, label="页面", max_retries=3):
+        """安全导航到指定 URL，带超时重试。"""
+        for attempt in range(max_retries):
+            try:
+                self.driver.get(url)
+                return True
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"  ⚠ [{label}] 加载超时，重试 ({attempt+1}/{max_retries})...")
+                    time.sleep(5)
+                else:
+                    print(f"  ✗ [{label}] 加载失败: {e}")
+                    return False
+        return False
+
+    # ----- 抓取方法 -----
+
+    def fetch_tweet(self, tweet_id):
+        """获取单条推文详情。"""
+        url = f"https://x.com/i/status/{tweet_id}"
+        print(f"正在访问: {url}")
+
+        self.rate_limiter.wait(label="获取推文")
+        self._navigate(url, label="推文")
+        time.sleep(3)
+
+        # 等待推文元素加载
+        try:
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, self.TWEET_SELECTOR))
+            )
+        except Exception:
+            print(f"  ⚠ 推文加载超时，可能不存在或无权限访问")
+            return []
+
+        # 提取第一条推文（原帖）
+        articles = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
+        if not articles:
+            print(f"  ✗ 未找到推文元素")
+            return []
+
+        tweet_data = self._extract_tweet(articles[0])
+        if tweet_data:
+            self.tweet_ids.add(tweet_data["id"])
+            self.got_count += 1
+            print(f"  ✓ 获取成功: @{tweet_data['author_handle']}")
+            print(f"    内容: {tweet_data['text'][:80]}..."
+                  if len(tweet_data['text']) > 80
+                  else f"    内容: {tweet_data['text']}")
+            print(f"    点赞: {tweet_data['favorite_count']}  "
+                  f"转发: {tweet_data['retweet_count']}  "
+                  f"回复: {tweet_data['reply_count']}")
+            return [tweet_data]
+        return []
+
+    def fetch_user_timeline(self, screen_name, count=20):
+        """获取指定用户的最新推文。"""
+        screen_name = screen_name.lstrip("@")
+        url = f"https://x.com/{screen_name}"
+        print(f"正在访问用户主页: @{screen_name}")
+        print(f"目标: {count} 条推文")
+
+        self.rate_limiter.wait(label="访问主页")
+        self._navigate(url, label="用户主页")
+        time.sleep(3)
+
+        # 滚动加载
+        tweet_elements = self._scroll_to_load(count, label="@{screen_name}")
+
+        # 提取数据
+        tweets = []
+        for article in tweet_elements:
+            if len(tweets) >= count:
+                break
+            data = self._extract_tweet(article)
+            if data and data["id"] not in self.tweet_ids:
+                self.tweet_ids.add(data["id"])
+                tweets.append(data)
+
+        self.got_count += len(tweets)
+        print(f"  ✓ 实际获取 {len(tweets)} 条 @{screen_name} 的推文")
+        return tweets
+
+    def fetch_search_tweets(self, query, count=20, product="Latest"):
+        """根据关键词搜索推文。"""
+        from urllib.parse import quote_plus
+
+        encoded_query = quote_plus(query)
+        url = f"https://x.com/search?q={encoded_query}&f={'live' if product == 'Latest' else 'top'}"
+        print(f"正在搜索: \"{query}\" (类型: {product}, 目标: {count} 条)")
+
+        self.rate_limiter.wait(label="搜索")
+        self._navigate(url, label="搜索")
+        time.sleep(3)
+
+        # 滚动加载
+        tweet_elements = self._scroll_to_load(count, label="搜索")
+
+        # 提取数据
+        tweets = []
+        for article in tweet_elements:
+            if len(tweets) >= count:
+                break
+            data = self._extract_tweet(article)
+            if data and data["id"] not in self.tweet_ids:
+                self.tweet_ids.add(data["id"])
+                tweets.append(data)
+
+        self.got_count += len(tweets)
+        print(f"  ✓ 实际获取 {len(tweets)} 条搜索结果")
+        return tweets
+
+    def fetch_tweet_replies(self, tweet_id, count=20):
+        """获取指定推文的回复列表（含原帖）。"""
+        url = f"https://x.com/i/status/{tweet_id}"
+        print(f"正在获取推文 {tweet_id} 及其回复 (目标 {count} 条)...")
+
+        self.rate_limiter.wait(label="获取推文及回复")
+        self._navigate(url, label="推文及回复")
+        time.sleep(3)
+
+        # 等待加载
+        try:
+            WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, self.TWEET_SELECTOR))
+            )
+        except Exception:
+            print(f"  ⚠ 页面加载超时")
+            return []
+
+        # 滚动加载更多（含原帖所以 target+1）
+        tweet_elements = self._scroll_to_load(count + 1, label="回复")
+
+        # 提取数据
+        all_tweets = []
+        for article in tweet_elements:
+            if len(all_tweets) >= count + 1:
+                break
+            data = self._extract_tweet(article)
+            if data and data["id"] not in self.tweet_ids:
+                self.tweet_ids.add(data["id"])
+                all_tweets.append(data)
+
+        # 第一条是原帖
+        if all_tweets:
+            all_tweets[0]["is_original"] = True
+            for t in all_tweets[1:]:
+                t["is_original"] = False
+
+        self.got_count += len(all_tweets)
+        print(f"  ✓ 实际获取原帖 + {max(0, len(all_tweets)-1)} 条回复")
+        return all_tweets
+
+    # ----- 数据输出 -----
+
+    def export_csv(self, data, output_path, meta=None):
+        """将推文数据导出为 CSV 文件（UTF-8 编码）。"""
+        if not data:
+            print("⚠ 无数据可输出")
+            return
+
+        fieldnames = [
+            "id", "text", "created_at", "author_name", "author_handle",
+            "favorite_count", "retweet_count", "reply_count", "quote_count",
+            "view_count", "hashtags", "urls", "media_count",
+            "is_reply", "tweet_url",
+        ]
+
+        with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(data)
 
         print(f"\n✓ 结果已保存到: {output_path}")
 
     def _make_output_path(self, query, suffix=""):
         """生成输出文件路径。"""
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        # 清理文件名中的非法字符
         safe_query = "".join(
             c for c in str(query) if c.isalnum() or c in "_- "
         )[:50].strip().replace(" ", "_")
         if suffix:
             safe_query = f"{safe_query}_{suffix}"
-        filename = f"{safe_query}_{ts}.json"
+        filename = f"{safe_query}_{ts}.csv"
         return os.path.join(self.output_dir, filename)
 
     # ----- 调度入口 -----
 
-    async def start(self, cli_args):
+    def start(self, cli_args):
         """根据 CLI 参数调度抓取任务。"""
-        await self.login()
+        self.login()
 
         mode = cli_args.mode
         data = []
-        output_path = None
         query = ""
 
         try:
             if mode == "tweet":
                 tweet_id = cli_args.tweet_id
                 query = tweet_id
-                include_replies = cli_args.replies
-                result = await self.fetch_tweet(
-                    tweet_id, include_replies=include_replies
-                )
-                data = [result]
+                data = self.fetch_tweet(tweet_id)
 
             elif mode == "timeline":
                 screen_name = cli_args.screen_name
                 count = cli_args.count
                 query = screen_name
-                data = await self.fetch_user_timeline(screen_name, count)
+                data = self.fetch_user_timeline(screen_name, count)
 
             elif mode == "search":
                 query = cli_args.query
                 count = cli_args.count
                 product = cli_args.product
-                data = await self.fetch_search_tweets(query, count, product)
+                data = self.fetch_search_tweets(query, count, product)
 
             elif mode == "replies":
                 tweet_id = cli_args.tweet_id
                 count = cli_args.count
                 query = tweet_id
-                data = await self.fetch_tweet_replies(tweet_id, count)
+                data = self.fetch_tweet_replies(tweet_id, count)
 
         except KeyboardInterrupt:
             print("\n⚠ 用户中断操作")
             if data:
                 print(f"  已获取 {len(data)} 条数据，正在保存...")
             else:
+                self.driver.quit()
                 sys.exit(0)
+        except Exception as e:
+            print(f"\n✗ 抓取异常: {e}")
+            traceback.print_exc()
+        finally:
+            # 确保浏览器关闭
+            if self.driver:
+                self.driver.quit()
+                print("浏览器已关闭")
 
         # 输出
-        if output_path is None:
-            output_path = cli_args.output
-        if output_path is None:
+        output_path = getattr(cli_args, "output", None)
+        if not output_path:
             output_path = self._make_output_path(query, mode)
 
-        self.export_json(data, output_path, meta={
-            "mode": mode,
-            "query": query,
-            "count_requested": getattr(cli_args, "count", 1) if hasattr(cli_args, "count") else 1,
-            "count_actual": len(data) if isinstance(data, list) else 1,
-        })
+        if data:
+            self.export_csv(data, output_path)
 
         print_summary(
             mode=mode,
             query=query,
-            requested=getattr(cli_args, "count", 1) if hasattr(cli_args, "count") else 1,
-            actual=len(data) if isinstance(data, list) else 1,
+            requested=getattr(cli_args, "count", 1),
+            actual=len(data),
             output_path=output_path,
             skipped=self.skipped_count,
         )
@@ -747,15 +822,10 @@ def generate_config(output_path="config.json"):
     """生成模板配置文件。"""
     template = {
         "auth": {
-            "username": "",
-            "email": "",
-            "password": "",
             "cookies_file": "x_cookies.json",
         },
         "output": {
             "directory": "x_output",
-            "include_replies": True,
-            "include_quoted_tweets": True,
         },
         "rate_limit": {
             "min_interval_seconds": 8,
@@ -765,8 +835,11 @@ def generate_config(output_path="config.json"):
             "cooldown_seconds": 300,
             "max_retries": 3,
         },
-        "filter": 1,
-        "since_date": "",
+        "selenium": {
+            "headless": False,
+            "page_load_timeout": 30,
+            "scroll_pause_seconds": 3,
+        },
     }
 
     if os.path.exists(output_path):
@@ -782,25 +855,24 @@ def generate_config(output_path="config.json"):
     print(f"✓ 配置文件模板已生成: {output_path}")
     print()
     print("下一步：")
-    print("  1. 编辑 config.json 配置认证信息")
-    print("  2. 推荐方式（Cookie 认证，无需暴露密码）：")
+    print("  1. 编辑 config.json，将 cookies_file 指向 Cookie 文件")
+    print("  2. Cookie 文件获取方式：")
     print("     - 在浏览器中登录 x.com")
     print("     - 打开开发者工具 → Application → Cookies")
-    print("     - 导出所有 Cookies 保存为 x_cookies.json")
-    print("  3. 或者在 config.json 中填写 username + email + password")
+    print("     - 导出 Cookie 保存为 x_cookies.json")
+    print("  3. 确保 Chrome 浏览器已安装")
     print()
     print("然后运行: python3 x_scraper.py tweet <推文ID>")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="X (Twitter) 帖子爬虫工具 - 基于 twikit 库",
+        description="X (Twitter) 帖子爬虫工具 - 基于 Selenium + Chrome",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
   python3 x_scraper.py config                       生成配置文件
   python3 x_scraper.py tweet 1234567890             获取单条推文
-  python3 x_scraper.py tweet 1234567890 --replies   获取推文及回复
   python3 x_scraper.py timeline elonmusk --count 50 获取用户时间线
   python3 x_scraper.py search "python" --count 20   搜索推文
   python3 x_scraper.py replies 1234567890 --count 30 获取推文回复
@@ -828,124 +900,51 @@ def main():
     )
 
     # ---- tweet 子命令 ----
-    tweet_parser = subparsers.add_parser(
-        "tweet",
-        help="根据推文 ID 获取单条推文详情",
-    )
-    tweet_parser.add_argument(
-        "tweet_id",
-        help="推文 ID（数字字符串，从 URL 中获取）",
-    )
-    tweet_parser.add_argument(
-        "--replies",
-        action="store_true",
-        help="同时获取该推文的回复/评论",
-    )
-    tweet_parser.add_argument(
-        "-o", "--output",
-        help="输出文件路径（默认自动生成）",
-    )
+    tweet_parser = subparsers.add_parser("tweet", help="根据推文 ID 获取单条推文详情")
+    tweet_parser.add_argument("tweet_id", help="推文 ID（数字字符串，从 URL 中获取）")
+    tweet_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
 
     # ---- timeline 子命令 ----
-    timeline_parser = subparsers.add_parser(
-        "timeline",
-        help="获取指定用户的最新推文",
-    )
-    timeline_parser.add_argument(
-        "screen_name",
-        help="用户 screen name（@后面的部分，如 elonmusk）",
-    )
-    timeline_parser.add_argument(
-        "--count",
-        type=int,
-        default=20,
-        help="获取推文数量 (默认: 20)",
-    )
-    timeline_parser.add_argument(
-        "-o", "--output",
-        help="输出文件路径（默认自动生成）",
-    )
+    timeline_parser = subparsers.add_parser("timeline", help="获取指定用户的最新推文")
+    timeline_parser.add_argument("screen_name", help="用户 screen name（@后面的部分，如 elonmusk）")
+    timeline_parser.add_argument("--count", type=int, default=20, help="获取推文数量 (默认: 20)")
+    timeline_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
 
     # ---- search 子命令 ----
-    search_parser = subparsers.add_parser(
-        "search",
-        help="根据关键词搜索推文",
-    )
+    search_parser = subparsers.add_parser("search", help="根据关键词搜索推文")
+    search_parser.add_argument("query", help="搜索关键词")
+    search_parser.add_argument("--count", type=int, default=20, help="获取推文数量 (默认: 20)")
     search_parser.add_argument(
-        "query",
-        help="搜索关键词",
-    )
-    search_parser.add_argument(
-        "--count",
-        type=int,
-        default=20,
-        help="获取推文数量 (默认: 20)",
-    )
-    search_parser.add_argument(
-        "--product",
-        choices=["Top", "Latest", "Media"],
-        default="Latest",
+        "--product", choices=["Top", "Latest"], default="Latest",
         help="搜索类型 (默认: Latest)",
     )
-    search_parser.add_argument(
-        "-o", "--output",
-        help="输出文件路径（默认自动生成）",
-    )
+    search_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
 
     # ---- replies 子命令 ----
-    replies_parser = subparsers.add_parser(
-        "replies",
-        help="获取指定推文的回复列表（含原帖）",
-    )
-    replies_parser.add_argument(
-        "tweet_id",
-        help="推文 ID",
-    )
-    replies_parser.add_argument(
-        "--count",
-        type=int,
-        default=20,
-        help="获取回复数量 (默认: 20)",
-    )
-    replies_parser.add_argument(
-        "-o", "--output",
-        help="输出文件路径（默认自动生成）",
-    )
+    replies_parser = subparsers.add_parser("replies", help="获取指定推文的回复列表（含原帖）")
+    replies_parser.add_argument("tweet_id", help="推文 ID")
+    replies_parser.add_argument("--count", type=int, default=20, help="获取回复数量 (默认: 20)")
+    replies_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
 
     # ---- config 子命令 ----
-    config_parser = subparsers.add_parser(
-        "config",
-        help="生成模板配置文件",
-    )
+    config_parser = subparsers.add_parser("config", help="生成模板配置文件")
     config_parser.add_argument(
-        "-o", "--output",
-        default="config.json",
+        "-o", "--output", default="config.json",
         help="配置文件输出路径 (默认: config.json)",
     )
 
     # 解析
     args = parser.parse_args()
 
-    # 没有子命令时打印帮助
     if not args.mode:
         parser.print_help()
         print("\n✗ 请指定一个子命令")
         sys.exit(1)
 
-    # config 子命令不需要加载配置和登录
     if args.mode == "config":
         print_banner()
         generate_config(args.output)
         return
-
-    # 检查 twikit 是否已安装
-    try:
-        import twikit  # noqa: F401
-    except ImportError:
-        print("✗ 未安装 twikit 库")
-        print("  请运行: pip install twikit")
-        print("  或: pip install -r requirements.txt")
-        sys.exit(1)
 
     print_banner()
 
@@ -953,18 +952,8 @@ def main():
     config = get_config(args.config)
 
     # 创建爬虫实例并执行
-    scraper = XScraper(config)
-
-    try:
-        asyncio.run(scraper.start(args))
-    except KeyboardInterrupt:
-        print("\n⚠ 用户中断操作")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n✗ 程序异常: {e}")
-        if args.verbose:
-            traceback.print_exc()
-        sys.exit(1)
+    scraper = SeleniumScraper(config)
+    scraper.start(args)
 
 
 if __name__ == "__main__":
