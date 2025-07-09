@@ -90,6 +90,91 @@ def safe_get(obj, attr, default=None):
 
 
 # ============================================================
+#  RateLimiter 类 - 统一请求限流控制器
+# ============================================================
+
+class RateLimiter:
+    """统一请求限流器
+
+    三层节奏控制：
+    1. 请求级 — 每次 API 调用前强制等待固定间隔 + 随机抖动
+    2. 批次级 — 连续请求达到阈值后触发长暂停，模拟人类行为
+    3. 异常级 — 触发平台限流后进入冷却期，大幅降低请求频率
+    """
+
+    def __init__(self, config):
+        cfg = config.get("rate_limit", {})
+        self.min_interval = cfg.get("min_interval_seconds", 8)
+        self.max_interval = cfg.get("max_interval_seconds", 15)
+        self.long_pause = cfg.get("long_pause_seconds", 90)
+        self.batch_size = cfg.get("pages_per_long_pause", 10)
+        self.cooldown_seconds = cfg.get("cooldown_seconds", 300)
+        self.max_retries = cfg.get("max_retries", 3)
+
+        self._last_request = 0.0
+        self._request_count = 0
+        self._in_cooldown = False
+
+    @property
+    def request_count(self):
+        return self._request_count
+
+    async def wait(self, label="请求"):
+        """每次网络请求前调用，自动计算并等待合适间隔"""
+        if self._last_request > 0:
+            elapsed = time.time() - self._last_request
+            jitter = random.uniform(0, self.max_interval - self.min_interval)
+            required = self.min_interval + jitter
+
+            if elapsed < required:
+                delay = required - elapsed
+                print(f"  ⏳ [{label}] 等待 {delay:.1f}s "
+                      f"(固定间隔={self.min_interval}s + 随机={jitter:.1f}s)")
+                await asyncio.sleep(delay)
+
+        self._last_request = time.time()
+        self._request_count += 1
+
+    async def batch_pause(self):
+        """每批次请求后长暂停，模拟人类休息"""
+        if self._request_count > 0 and self._request_count % self.batch_size == 0:
+            print(f"  🛑 已完成 {self._request_count} 次请求，"
+                  f"长暂停 {self.long_pause}s 模拟人类行为...")
+            await asyncio.sleep(self.long_pause)
+
+    async def cooldown(self):
+        """触发平台限流后的强制冷却"""
+        self._in_cooldown = True
+        print(f"  🚫 触发限流保护，强制冷却 {self.cooldown_seconds}s...")
+        await asyncio.sleep(self.cooldown_seconds)
+        self._in_cooldown = False
+        self._request_count = 0
+
+    async def retry_with_backoff(self, coro_func, label="操作"):
+        """带指数退避的重试执行，检测到限流自动冷却"""
+        last_error = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                return await coro_func()
+            except Exception as e:
+                last_error = e
+                msg = str(e).lower()
+
+                if any(kw in msg for kw in ["rate limit", "too many", "429"]):
+                    print(f"  ⚠ [{label}] 触发平台限流")
+                    await self.cooldown()
+                elif attempt < self.max_retries:
+                    delay = 2 ** attempt  # 2, 4, 8
+                    print(f"  ⚠ [{label}] 失败，{delay}s 后重试 "
+                          f"({attempt}/{self.max_retries})")
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
+        raise last_error
+
+
+# ============================================================
 #  XScraper 类
 # ============================================================
 
@@ -111,13 +196,8 @@ class XScraper:
             self.output_dir = os.path.join(script_dir, self.output_dir)
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # 频率控制
-        rate_cfg = config.get("rate_limit", {})
-        self.min_sleep = rate_cfg.get("min_sleep_seconds", 6)
-        self.max_sleep = rate_cfg.get("max_sleep_seconds", 10)
-        self.pages_before_sleep = rate_cfg.get("pages_before_sleep", 5)
-        self.cooldown = rate_cfg.get("cooldown_seconds", 60)
-        self.max_retries = rate_cfg.get("max_retries", 3)
+        # 统一限流器
+        self.rate_limiter = RateLimiter(config)
 
         # 收集追踪
         self.got_count = 0
@@ -312,47 +392,6 @@ class XScraper:
 
         return result
 
-    # ----- 频率控制 -----
-
-    def _random_sleep(self, min_s=None, max_s=None):
-        """随机休眠以避免触发频率限制。"""
-        min_s = min_s if min_s is not None else self.min_sleep
-        max_s = max_s if max_s is not None else self.max_sleep
-        delay = round(random.uniform(min_s, max_s), 1)
-        print(f"  ⏳ 等待 {delay} 秒以避免频率限制...")
-        time.sleep(delay)
-
-    async def _retry_on_error(self, coro_func, error_msg="操作失败",
-                              max_retries=None):
-        """带指数退避的重试执行异步协程。"""
-        if max_retries is None:
-            max_retries = self.max_retries
-
-        last_error = None
-        for attempt in range(1, max_retries + 1):
-            try:
-                return await coro_func()
-            except Exception as e:
-                last_error = e
-                error_str = str(e).lower()
-
-                # 检测频率限制
-                if any(kw in error_str for kw in
-                       ["rate limit", "too many", "429", "timeout"]):
-                    wait = self.cooldown
-                    print(f"  ⚠ 触发频率限制，等待 {wait} 秒后重试 "
-                          f"({attempt}/{max_retries})...")
-                    time.sleep(wait)
-                elif attempt < max_retries:
-                    delay = 2 * (2 ** (attempt - 1))  # 2, 4, 8
-                    print(f"  ⚠ {error_msg}，{delay}秒后重试 "
-                          f"({attempt}/{max_retries})...")
-                    time.sleep(delay)
-                else:
-                    raise
-
-        raise last_error
-
     # ----- 数据抓取 -----
 
     async def fetch_tweet(self, tweet_id, include_replies=False):
@@ -369,8 +408,9 @@ class XScraper:
             return await self.client.get_tweet_by_id(tweet_id)
 
         print(f"正在获取推文 {tweet_id} ...")
-        tweet = await self._retry_on_error(
-            _get, f"获取推文 {tweet_id} 失败"
+        await self.rate_limiter.wait(label=f"获取推文 {tweet_id}")
+        tweet = await self.rate_limiter.retry_with_backoff(
+            _get, label=f"获取推文 {tweet_id}"
         )
 
         result = self._convert_tweet_to_dict(tweet)
@@ -408,12 +448,11 @@ class XScraper:
                         self.tweet_ids.add(d["id"])
                         replies.append(d)
 
-                if page_count % self.pages_before_sleep == 0:
-                    self._random_sleep()
-
                 # 获取下一页
                 try:
+                    await self.rate_limiter.wait(label=f"回复翻页{page_count}")
                     reply_result = await reply_result.next()
+                    await self.rate_limiter.batch_pause()
                 except Exception:
                     break
 
@@ -459,13 +498,11 @@ class XScraper:
 
             print(f"  已获取 {len(tweets)}/{count} 条{label} (第 {page_count} 页)")
 
-            # 频率控制
-            if page_count % self.pages_before_sleep == 0:
-                self._random_sleep()
-
             # 获取下一页
             try:
+                await self.rate_limiter.wait(label=f"{label}翻页{page_count}")
                 result = await result.next()
+                await self.rate_limiter.batch_pause()
             except Exception as e:
                 print(f"  ⚠ 翻页时出错: {e}")
                 break
@@ -484,9 +521,10 @@ class XScraper:
             return await self.client.get_user_by_screen_name(screen_name)
 
         print(f"正在查找用户 @{screen_name} ...")
+        await self.rate_limiter.wait(label=f"查找用户")
         try:
-            user = await self._retry_on_error(
-                _get_user, f"查找用户 @{screen_name} 失败"
+            user = await self.rate_limiter.retry_with_backoff(
+                _get_user, label=f"查找用户 @{screen_name}"
             )
         except Exception:
             print(f"✗ 用户 @{screen_name} 不存在或无法访问")
@@ -504,9 +542,10 @@ class XScraper:
             )
 
         print(f"正在获取 @{screen_name} 的推文 (目标 {count} 条)...")
+        await self.rate_limiter.wait(label=f"获取用户推文")
         try:
-            result = await self._retry_on_error(
-                _get_tweets, f"获取 @{screen_name} 推文失败"
+            result = await self.rate_limiter.retry_with_backoff(
+                _get_tweets, label=f"获取 @{screen_name} 推文"
             )
         except Exception as e:
             print(f"✗ 获取推文失败: {e}")
@@ -532,9 +571,10 @@ class XScraper:
             )
 
         print(f"正在搜索: \"{query}\" (类型: {product}, 目标: {count} 条)...")
+        await self.rate_limiter.wait(label=f"搜索")
         try:
-            result = await self._retry_on_error(
-                _search, f"搜索 \"{query}\" 失败"
+            result = await self.rate_limiter.retry_with_backoff(
+                _search, label=f"搜索 \"{query}\""
             )
         except Exception as e:
             print(f"✗ 搜索失败: {e}")
@@ -557,8 +597,9 @@ class XScraper:
             return await self.client.get_tweet_by_id(tweet_id)
 
         print(f"正在获取推文 {tweet_id} 及其回复...")
-        tweet = await self._retry_on_error(
-            _get, f"获取推文 {tweet_id} 失败"
+        await self.rate_limiter.wait(label=f"获取推文 {tweet_id}")
+        tweet = await self.rate_limiter.retry_with_backoff(
+            _get, label=f"获取推文 {tweet_id}"
         )
 
         # 先添加原推文
@@ -717,10 +758,11 @@ def generate_config(output_path="config.json"):
             "include_quoted_tweets": True,
         },
         "rate_limit": {
-            "min_sleep_seconds": 6,
-            "max_sleep_seconds": 10,
-            "pages_before_sleep": 5,
-            "cooldown_seconds": 60,
+            "min_interval_seconds": 8,
+            "max_interval_seconds": 15,
+            "long_pause_seconds": 90,
+            "pages_per_long_pause": 10,
+            "cooldown_seconds": 300,
             "max_retries": 3,
         },
         "filter": 1,
