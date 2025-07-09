@@ -355,16 +355,36 @@ class SeleniumScraper:
 
     # ----- 滚动加载 -----
 
-    def _scroll_to_load(self, target_count, label="推文", max_scrolls=50):
-        """滚动页面加载更多推文，直到达到目标数量或无法加载更多。"""
+    def _scroll_to_load(self, target_count, label="推文", max_scrolls=200, since_date=None):
+        """滚动页面加载更多推文。
+
+        Args:
+            target_count: 目标推文数量
+            label: 日志标签
+            max_scrolls: 最大滚动次数
+            since_date: 起始日期字符串 'YYYY-MM-DD'，早于此日期的推文出现时停止滚动
+        """
         tweet_elements = []
         last_count = 0
         stale_count = 0
 
         for scroll_num in range(max_scrolls):
-            # 获取当前所有推文元素
             tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
             current_count = len(tweet_elements)
+
+            # 时间过滤：检查最后一条推文是否已早于 since_date
+            if since_date and tweet_elements:
+                last_article = tweet_elements[-1]
+                try:
+                    time_el = last_article.find_element(By.CSS_SELECTOR, self.TIME_SELECTOR)
+                    dt = time_el.get_attribute("datetime") or ""
+                    if dt and dt[:10] < since_date:
+                        print(f"  最后一条推文时间 {dt[:10]} 早于 {since_date}，停止滚动")
+                        # 过滤掉早于 since_date 的推文
+                        tweet_elements = self._filter_by_date(tweet_elements, since_date)
+                        break
+                except Exception:
+                    pass
 
             if current_count >= target_count:
                 print(f"  已加载 {current_count} 个推文元素 (目标 {target_count})")
@@ -381,17 +401,29 @@ class SeleniumScraper:
 
             last_count = current_count
 
-            # 限流等待
             self.rate_limiter.wait(label=f"{label}滚动{scroll_num+1}")
-
-            # 滚动到底部
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(self.scroll_pause)
-
-            # 批次长暂停
             self.rate_limiter.batch_pause()
 
+        # 最终按时间过滤
+        if since_date:
+            tweet_elements = self._filter_by_date(tweet_elements, since_date)
+
         return tweet_elements[:target_count]
+
+    def _filter_by_date(self, tweet_elements, since_date):
+        """过滤掉 created_at 早于 since_date 的推文元素。"""
+        filtered = []
+        for article in tweet_elements:
+            try:
+                time_el = article.find_element(By.CSS_SELECTOR, self.TIME_SELECTOR)
+                dt = time_el.get_attribute("datetime") or ""
+                if dt and dt[:10] >= since_date:
+                    filtered.append(article)
+            except Exception:
+                filtered.append(article)  # 无法解析时间的保留
+        return filtered
 
     # ----- 推文数据提取 -----
 
@@ -615,27 +647,39 @@ class SeleniumScraper:
             return [tweet_data]
         return []
 
-    def fetch_user_timeline(self, screen_name, count=20):
-        """获取指定用户的最新推文。"""
+    def fetch_user_timeline(self, screen_name, count=20, since_date=None, until_date=None):
+        """获取指定用户的最新推文。
+
+        Args:
+            screen_name: 用户 screen name
+            count: 目标推文数量
+            since_date: 起始日期 'YYYY-MM-DD'，不传则不限
+            until_date: 截止日期 'YYYY-MM-DD'，不传则不限
+        """
         screen_name = screen_name.lstrip("@")
         url = f"https://x.com/{screen_name}"
         print(f"正在访问用户主页: @{screen_name}")
+        if since_date or until_date:
+            print(f"时间段: {since_date or '不限'} ~ {until_date or '不限'}")
         print(f"目标: {count} 条推文")
 
         self.rate_limiter.wait(label="访问主页")
         self._navigate(url, label="用户主页")
         time.sleep(3)
 
-        # 滚动加载
-        tweet_elements = self._scroll_to_load(count, label="@{screen_name}")
+        # 滚动加载（传入时间过滤）
+        tweet_elements = self._scroll_to_load(count, label=f"@{screen_name}", since_date=since_date)
 
-        # 提取数据
+        # 提取数据 + 时间过滤
         tweets = []
         for article in tweet_elements:
             if len(tweets) >= count:
                 break
             data = self._extract_tweet(article)
             if data and data["id"] not in self.tweet_ids:
+                # until_date 过滤：跳过晚于截止日期的
+                if until_date and data["created_at"] and data["created_at"][:10] > until_date:
+                    continue
                 self.tweet_ids.add(data["id"])
                 tweets.append(data)
 
@@ -713,10 +757,110 @@ class SeleniumScraper:
         print(f"  ✓ 实际获取原帖 + {max(0, len(all_tweets)-1)} 条回复")
         return all_tweets
 
+    # ----- 批量评论抓取 -----
+
+    def _fetch_top_replies(self, tweet_url, count=5):
+        """获取单条推文的前 N 条热评（含评论点赞数）。
+
+        Args:
+            tweet_url: 推文链接
+            count: 取前多少条评论
+
+        Returns:
+            dict 列表，每条包含评论内容、点赞数、作者等
+        """
+        replies = []
+        try:
+            self.rate_limiter.wait(label="获取评论")
+            self._navigate(tweet_url, label="推文详情")
+            time.sleep(4)
+
+            # 等待评论加载
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, self.TWEET_SELECTOR))
+                )
+            except Exception:
+                return replies
+
+            # 取推文详情页上的所有 article（第一条是原帖，后续是评论）
+            articles = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
+            # 跳过第一条（原帖），取评论
+            reply_articles = articles[1:count + 1]
+
+            for article in reply_articles:
+                data = self._extract_tweet(article)
+                if data:
+                    replies.append(data)
+
+        except Exception as e:
+            print(f"  ⚠ 获取评论时出错: {e}")
+
+        return replies
+
+    def fetch_report(self, screen_name, since_date, until_date=None, replies_per_tweet=5):
+        """一站式报告：用户时间线 + 每条推文的热评。
+
+        Args:
+            screen_name: 用户 screen name
+            since_date: 起始日期 'YYYY-MM-DD'
+            until_date: 截止日期 'YYYY-MM-DD'（可选）
+            replies_per_tweet: 每条推文取多少条热评
+
+        Returns:
+            (posts, comments) 两个列表
+        """
+        # 第一步：获取用户时间线
+        print(f"\n{'='*40}")
+        print(f"  第一步：抓取 @{screen_name} 的时间线")
+        print(f"{'='*40}")
+        posts = self.fetch_user_timeline(
+            screen_name, count=9999,  # 不限数量，靠时间过滤控制
+            since_date=since_date,
+            until_date=until_date,
+        )
+
+        if not posts:
+            print("✗ 该时间段内无推文")
+            return [], []
+
+        print(f"\n✓ 第一步完成：获取 {len(posts)} 条推文")
+
+        # 第二步：对每条推文抓取热评
+        print(f"\n{'='*40}")
+        print(f"  第二步：抓取每条推文的前 {replies_per_tweet} 条热评")
+        print(f"{'='*40}")
+
+        all_comments = []
+        for i, post in enumerate(posts):
+            tweet_url = post.get("tweet_url", "")
+            if not tweet_url:
+                continue
+
+            print(f"\n[{i+1}/{len(posts)}] {post['text'][:60]}...")
+            comments = self._fetch_top_replies(tweet_url, count=replies_per_tweet)
+
+            # 给每条评论打上所属推文 ID
+            for c in comments:
+                c["parent_tweet_id"] = post["id"]
+                c["parent_author"] = post["author_handle"]
+
+            all_comments.extend(comments)
+            print(f"  → 获取 {len(comments)} 条评论")
+
+        print(f"\n✓ 第二步完成：共获取 {len(all_comments)} 条评论")
+        return posts, all_comments
+
     # ----- 数据输出 -----
 
-    def export_csv(self, data, output_path, meta=None):
-        """将推文数据导出为 CSV 文件（UTF-8 编码）。"""
+    def export_csv(self, data, output_path, extra_fields=None):
+        """将数据导出为 CSV 文件（UTF-8 编码）。
+
+        Args:
+            data: 字典列表
+            output_path: 输出文件路径
+            extra_fields: 额外字段名列表（如评论的 parent_tweet_id）
+        """
         if not data:
             print("⚠ 无数据可输出")
             return
@@ -727,6 +871,8 @@ class SeleniumScraper:
             "view_count", "hashtags", "urls", "media_count",
             "is_reply", "tweet_url",
         ]
+        if extra_fields:
+            fieldnames.extend(extra_fields)
 
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -765,8 +911,10 @@ class SeleniumScraper:
             elif mode == "timeline":
                 screen_name = cli_args.screen_name
                 count = cli_args.count
+                since = getattr(cli_args, "since", None)
+                until = getattr(cli_args, "until", None)
                 query = screen_name
-                data = self.fetch_user_timeline(screen_name, count)
+                data = self.fetch_user_timeline(screen_name, count, since, until)
 
             elif mode == "search":
                 query = cli_args.query
@@ -779,6 +927,39 @@ class SeleniumScraper:
                 count = cli_args.count
                 query = tweet_id
                 data = self.fetch_tweet_replies(tweet_id, count)
+
+            elif mode == "report":
+                screen_name = cli_args.screen_name
+                since_date = cli_args.since
+                until_date = getattr(cli_args, "until", None)
+                reply_count = cli_args.replies
+                query = screen_name
+
+                posts, comments = self.fetch_report(
+                    screen_name, since_date, until_date, reply_count
+                )
+
+                # 输出两个 CSV
+                post_path = getattr(cli_args, "output", None)
+                if not post_path:
+                    post_path = self._make_output_path(query, "posts")
+                if posts:
+                    self.export_csv(posts, post_path)
+
+                comment_path = None
+                if comments:
+                    comment_path = self._make_output_path(query, "comments")
+                    self.export_csv(comments, comment_path, extra_fields=["parent_tweet_id", "parent_author"])
+
+                print_summary(
+                    mode=mode,
+                    query=query,
+                    requested=reply_count,
+                    actual=len(posts),
+                    output_path=f"{post_path}\n{' '*12}+ {comment_path}",
+                    skipped=self.skipped_count,
+                )
+                return  # report 自己处理了输出，直接返回
 
         except KeyboardInterrupt:
             print("\n⚠ 用户中断操作")
@@ -871,11 +1052,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  python3 x_scraper.py config                       生成配置文件
-  python3 x_scraper.py tweet 1234567890             获取单条推文
-  python3 x_scraper.py timeline elonmusk --count 50 获取用户时间线
-  python3 x_scraper.py search "python" --count 20   搜索推文
-  python3 x_scraper.py replies 1234567890 --count 30 获取推文回复
+  python3 x_scraper.py config                                 生成配置文件
+  python3 x_scraper.py tweet 1234567890                       获取单条推文
+  python3 x_scraper.py timeline elonmusk --count 50           获取用户时间线
+  python3 x_scraper.py timeline elonmusk --since 2026-07-01   时间段过滤
+  python3 x_scraper.py search "python" --count 20             搜索推文
+  python3 x_scraper.py replies 1234567890 --count 30          获取推文回复
+  python3 x_scraper.py report elonmusk --since 2026-07-01 --replies 5  一站式报告
         """,
     )
 
@@ -908,6 +1091,8 @@ def main():
     timeline_parser = subparsers.add_parser("timeline", help="获取指定用户的最新推文")
     timeline_parser.add_argument("screen_name", help="用户 screen name（@后面的部分，如 elonmusk）")
     timeline_parser.add_argument("--count", type=int, default=20, help="获取推文数量 (默认: 20)")
+    timeline_parser.add_argument("--since", help="起始日期 YYYY-MM-DD")
+    timeline_parser.add_argument("--until", help="截止日期 YYYY-MM-DD")
     timeline_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
 
     # ---- search 子命令 ----
@@ -932,6 +1117,14 @@ def main():
         "-o", "--output", default="config.json",
         help="配置文件输出路径 (默认: config.json)",
     )
+
+    # ---- report 子命令 ----
+    report_parser = subparsers.add_parser("report", help="一站式报告：用户时间线 + 热评")
+    report_parser.add_argument("screen_name", help="用户 screen name（@后面部分）")
+    report_parser.add_argument("--since", required=True, help="起始日期 YYYY-MM-DD（必填）")
+    report_parser.add_argument("--until", help="截止日期 YYYY-MM-DD（可选）")
+    report_parser.add_argument("--replies", type=int, default=5, help="每条推文取多少热评 (默认: 5)")
+    report_parser.add_argument("-o", "--output", help="推文输出文件路径（默认自动生成）")
 
     # 解析
     args = parser.parse_args()
