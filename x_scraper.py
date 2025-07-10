@@ -355,62 +355,77 @@ class SeleniumScraper:
 
     # ----- 滚动加载 -----
 
-    def _scroll_to_load(self, target_count, label="推文", max_scrolls=200, since_date=None):
-        """滚动页面加载更多推文。
+    def _scroll_to_load(self, target_count, label="推文", max_scrolls=200, since_date=None, until_date=None):
+        """滚动页面加载更多推文，同时完成数据提取和去重。
+
+        X.com 使用虚拟列表，DOM 中同时只保留约 10-15 个 article 元素，
+        滚动时旧元素被回收。因此每轮滚动立即提取推文数据并积累，
+        避免 DOM 元素失效导致数据丢失。
 
         Args:
             target_count: 目标推文数量
             label: 日志标签
             max_scrolls: 最大滚动次数
-            since_date: 起始日期字符串 'YYYY-MM-DD'，早于此日期的推文出现时停止滚动
+            since_date: 起始日期 'YYYY-MM-DD'，早于此日期的推文出现时停止
+            until_date: 截止日期 'YYYY-MM-DD'，晚于此日期的推文跳过
+
+        Returns:
+            推文数据 dict 列表（已去重）
         """
-        tweet_elements = []
-        last_count = 0
+        collected = []
+        last_unique = 0
         stale_count = 0
 
         for scroll_num in range(max_scrolls):
+            # 每轮滚动后重新查询 DOM（遵守规则5：DOM变更后重新查询）
             tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
-            current_count = len(tweet_elements)
 
-            # 时间过滤：检查最后一条推文是否已早于 since_date
-            if since_date and tweet_elements:
-                last_article = tweet_elements[-1]
-                try:
-                    time_el = last_article.find_element(By.CSS_SELECTOR, self.TIME_SELECTOR)
-                    dt = time_el.get_attribute("datetime") or ""
-                    if dt and dt[:10] < since_date:
-                        print(f"  最后一条推文时间 {dt[:10]} 早于 {since_date}，停止滚动")
-                        # 过滤掉早于 since_date 的推文
-                        tweet_elements = self._filter_by_date(tweet_elements, since_date)
+            # 立即提取当前可见推文（虚拟列表回收前）
+            for article in tweet_elements:
+                if len(collected) >= target_count:
+                    break
+                data = self._extract_tweet(article)
+                if data and data["id"] not in self.tweet_ids:
+                    # 时间过滤
+                    created = data.get("created_at", "")
+                    if since_date and created and created[:10] < since_date:
+                        print(f"  推文时间 {created[:10]} 早于 {since_date}，停止滚动")
+                        self._stop_early = True
                         break
-                except Exception:
-                    pass
+                    if until_date and created and created[:10] > until_date:
+                        continue  # 跳过但不停止滚动
+                    self.tweet_ids.add(data["id"])
+                    collected.append(data)
 
-            if current_count >= target_count:
-                print(f"  已加载 {current_count} 个推文元素 (目标 {target_count})")
+            current_unique = len(collected)
+
+            if current_unique >= target_count:
+                print(f"  已收集 {current_unique} 条推文 (目标 {target_count})")
                 break
 
-            if current_count == last_count:
+            # 时间早于 since_date 则停止
+            if getattr(self, '_stop_early', False):
+                self._stop_early = False
+                break
+
+            # 基于唯一推文数量判断是否还有新内容（容忍虚拟列表波动）
+            if current_unique == last_unique:
                 stale_count += 1
-                if stale_count >= 3:
-                    print(f"  连续 {stale_count} 次无新内容，停止滚动")
+                if stale_count >= 5:
+                    print(f"  连续 {stale_count} 次无新推文，停止滚动")
                     break
             else:
                 stale_count = 0
-                print(f"  已加载 {current_count} 个推文元素 (目标 {target_count})")
+                print(f"  已收集 {current_unique} 条推文 (目标 {target_count})")
 
-            last_count = current_count
+            last_unique = current_unique
 
             self.rate_limiter.wait(label=f"{label}滚动{scroll_num+1}")
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(self.scroll_pause)
             self.rate_limiter.batch_pause()
 
-        # 最终按时间过滤
-        if since_date:
-            tweet_elements = self._filter_by_date(tweet_elements, since_date)
-
-        return tweet_elements[:target_count]
+        return collected
 
     def _filter_by_date(self, tweet_elements, since_date):
         """过滤掉 created_at 早于 since_date 的推文元素。"""
@@ -667,21 +682,11 @@ class SeleniumScraper:
         self._navigate(url, label="用户主页")
         time.sleep(3)
 
-        # 滚动加载（传入时间过滤）
-        tweet_elements = self._scroll_to_load(count, label=f"@{screen_name}", since_date=since_date)
-
-        # 提取数据 + 时间过滤
-        tweets = []
-        for article in tweet_elements:
-            if len(tweets) >= count:
-                break
-            data = self._extract_tweet(article)
-            if data and data["id"] not in self.tweet_ids:
-                # until_date 过滤：跳过晚于截止日期的
-                if until_date and data["created_at"] and data["created_at"][:10] > until_date:
-                    continue
-                self.tweet_ids.add(data["id"])
-                tweets.append(data)
+        # 滚动加载（边滚边提取，_scroll_to_load 现在返回数据列表）
+        tweets = self._scroll_to_load(
+            count, label=f"@{screen_name}",
+            since_date=since_date, until_date=until_date
+        )
 
         self.got_count += len(tweets)
         print(f"  ✓ 实际获取 {len(tweets)} 条 @{screen_name} 的推文")
@@ -699,18 +704,8 @@ class SeleniumScraper:
         self._navigate(url, label="搜索")
         time.sleep(3)
 
-        # 滚动加载
-        tweet_elements = self._scroll_to_load(count, label="搜索")
-
-        # 提取数据
-        tweets = []
-        for article in tweet_elements:
-            if len(tweets) >= count:
-                break
-            data = self._extract_tweet(article)
-            if data and data["id"] not in self.tweet_ids:
-                self.tweet_ids.add(data["id"])
-                tweets.append(data)
+        # 滚动加载（边滚边提取）
+        tweets = self._scroll_to_load(count, label="搜索")
 
         self.got_count += len(tweets)
         print(f"  ✓ 实际获取 {len(tweets)} 条搜索结果")
@@ -734,18 +729,8 @@ class SeleniumScraper:
             print(f"  ⚠ 页面加载超时")
             return []
 
-        # 滚动加载更多（含原帖所以 target+1）
-        tweet_elements = self._scroll_to_load(count + 1, label="回复")
-
-        # 提取数据
-        all_tweets = []
-        for article in tweet_elements:
-            if len(all_tweets) >= count + 1:
-                break
-            data = self._extract_tweet(article)
-            if data and data["id"] not in self.tweet_ids:
-                self.tweet_ids.add(data["id"])
-                all_tweets.append(data)
+        # 滚动加载更多（边滚边提取）
+        all_tweets = self._scroll_to_load(count + 1, label="回复")
 
         # 第一条是原帖
         if all_tweets:
