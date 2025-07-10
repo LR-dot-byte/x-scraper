@@ -203,14 +203,6 @@ class SeleniumScraper:
 
     # ---- X.com DOM 选择器 ----
     TWEET_SELECTOR = 'article[data-testid="tweet"]'
-    TEXT_SELECTOR = '[data-testid="tweetText"]'
-    USER_LINK_SELECTOR = 'a[role="link"]'
-    TIME_SELECTOR = "time"
-    PHOTO_SELECTOR = '[data-testid="tweetPhoto"]'
-    LIKE_SELECTOR = '[data-testid="like"]'
-    RETWEET_SELECTOR = '[data-testid="retweet"]'
-    REPLY_SELECTOR = '[data-testid="reply"]'
-    QUOTE_SELECTOR = '[data-testid="quote"]'
 
     def __init__(self, config):
         self.config = config
@@ -359,8 +351,7 @@ class SeleniumScraper:
         """滚动页面加载更多推文，同时完成数据提取和去重。
 
         X.com 使用虚拟列表，DOM 中同时只保留约 10-15 个 article 元素，
-        滚动时旧元素被回收。因此每轮滚动立即提取推文数据并积累，
-        避免 DOM 元素失效导致数据丢失。
+        滚动时旧元素被回收。使用 JS 提取 outerHTML 避免 stale element。
 
         Args:
             target_count: 目标推文数量
@@ -377,14 +368,14 @@ class SeleniumScraper:
         stale_count = 0
 
         for scroll_num in range(max_scrolls):
-            # 每轮滚动后重新查询 DOM（遵守规则5：DOM变更后重新查询）
-            tweet_elements = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
+            # 使用 JS 一次性获取所有可见推文的 outerHTML（原子操作，避免 stale element）
+            html_list = self._get_visible_tweet_htmls()
 
-            # 立即提取当前可见推文（虚拟列表回收前）
-            for article in tweet_elements:
+            # 逐条解析 HTML
+            for html in html_list:
                 if len(collected) >= target_count:
                     break
-                data = self._extract_tweet(article)
+                data = self._extract_tweet_from_html(html)
                 if data and data["id"] not in self.tweet_ids:
                     # 时间过滤
                     created = data.get("created_at", "")
@@ -427,114 +418,131 @@ class SeleniumScraper:
 
         return collected
 
-    def _filter_by_date(self, tweet_elements, since_date):
-        """过滤掉 created_at 早于 since_date 的推文元素。"""
-        filtered = []
-        for article in tweet_elements:
-            try:
-                time_el = article.find_element(By.CSS_SELECTOR, self.TIME_SELECTOR)
-                dt = time_el.get_attribute("datetime") or ""
-                if dt and dt[:10] >= since_date:
-                    filtered.append(article)
-            except Exception:
-                filtered.append(article)  # 无法解析时间的保留
-        return filtered
+    def _get_visible_tweet_htmls(self):
+        """通过 JS 一次性获取页面上所有可见推文的 outerHTML（原子操作）。"""
+        try:
+            js = """
+            var articles = document.querySelectorAll('article[data-testid="tweet"]');
+            var htmls = [];
+            articles.forEach(function(a) { htmls.push(a.outerHTML); });
+            return htmls;
+            """
+            return self.driver.execute_script(js) or []
+        except Exception as e:
+            print(f"  ⚠ JS 获取推文 HTML 失败: {e}")
+            return []
 
-    # ----- 推文数据提取 -----
+    # ----- 推文数据提取（基于 HTML 字符串，不依赖 Selenium 元素引用）-----
 
-    def _extract_tweet(self, article_el):
-        """从 article DOM 元素中提取推文数据字典。
-
-        Args:
-            article_el: Selenium WebElement (<article>)
-
-        Returns:
-            dict 或 None（无法解析时）
-        """
+    def _extract_tweet_from_html(self, html):
+        """从推文 HTML 字符串中提取数据字典（无 Selenium 依赖，无 stale element 风险）。"""
         try:
             # --- 推文链接 & ID ---
-            links = article_el.find_elements(By.CSS_SELECTOR, 'a[href*="/status/"]')
-            tweet_url = ""
             tweet_id = ""
-            for link in links:
-                href = link.get_attribute("href") or ""
-                match = re.search(r"/status/(\d+)", href)
-                if match:
-                    tweet_id = match.group(1)
-                    tweet_url = href
-                    break
+            tweet_url = ""
+            id_match = re.search(r'/status/(\d+)', html)
+            if id_match:
+                tweet_id = id_match.group(1)
+                tweet_url = f"https://x.com/i/status/{tweet_id}"
 
             if not tweet_id:
-                return None  # 无法提取 ID 的推文跳过
+                return None
 
             # --- 文本 ---
-            text_el = safe_find(article_el, self.TEXT_SELECTOR)
-            text = text_el.text.strip() if text_el else ""
+            text = ""
+            text_match = re.search(r'data-testid="tweetText"[^>]*>(.*?)</div>', html, re.DOTALL)
+            if text_match:
+                # 提取所有 span 中的文本
+                text_spans = re.findall(r'<span[^>]*class="[^"]*css-[^"]*"[^>]*>(.*?)</span>', text_match.group(1))
+                if text_spans:
+                    text = "".join(text_spans)
+                else:
+                    # 纯文本 fallback
+                    text = re.sub(r'<[^>]+>', '', text_match.group(1))
+                text = text.strip()
+
+            if not text:
+                # Fallback: 取整个 article 的文本（去头去尾）
+                raw = re.sub(r'<[^>]+>', ' ', html)
+                raw = re.sub(r'\s+', ' ', raw).strip()
+                # 尝试截取有意义的部分
+                text = raw[:500]
 
             # --- 时间 ---
-            time_el = safe_find(article_el, self.TIME_SELECTOR)
-            created_at = parse_datetime(time_el)
+            created_at = ""
+            time_match = re.search(r'<time[^>]*datetime="([^"]+)"', html)
+            if time_match:
+                created_at = time_match.group(1)
 
             # --- 作者信息 ---
             author_name = ""
             author_handle = ""
-            # 从 UserAvatar 容器提取 screen_name
-            avatar_containers = article_el.find_elements(
-                By.CSS_SELECTOR, '[data-testid^="UserAvatar-Container-"]'
-            )
-            if avatar_containers:
-                testid = avatar_containers[0].get_attribute("data-testid") or ""
-                author_handle = testid.replace("UserAvatar-Container-", "")
+            avatar_match = re.search(r'data-testid="UserAvatar-Container-(\w+)"', html)
+            if avatar_match:
+                author_handle = avatar_match.group(1)
 
             # 从用户链接提取显示名称
-            if author_handle:
-                user_links = article_el.find_elements(By.CSS_SELECTOR, f'a[href="/{author_handle}"]')
-                for ulink in user_links:
-                    aria_label = ulink.get_attribute("aria-label") or ""
-                    if aria_label and not aria_label.startswith("@"):
-                        author_name = aria_label
-                        break
-                    link_text = ulink.text.strip()
-                    if link_text and not link_text.startswith("@"):
-                        author_name = link_text
-                        break
-
-            if not author_name and author_handle:
-                for link in article_el.find_elements(By.CSS_SELECTOR, 'a[role="link"]'):
-                    href = link.get_attribute("href") or ""
-                    if f"/{author_handle}" in href:
-                        inner_text = link.text.strip()
-                        if inner_text and not inner_text.startswith("@") and len(inner_text) < 100:
-                            author_name = inner_text
-                            break
+            name_match = re.search(r'<span[^>]*><span[^>]*>([^<]+)</span></span>', html)
+            if name_match:
+                author_name = name_match.group(1).strip()
+            elif author_handle:
+                # 从 href 中查找显示名称
+                name_href_match = re.search(
+                    rf'href="/{re.escape(author_handle)}"[^>]*aria-label="([^"]+)"',
+                    html
+                )
+                if name_href_match and not name_href_match.group(1).startswith("@"):
+                    author_name = name_href_match.group(1)
 
             if not author_name:
                 author_name = author_handle
 
             # --- 互动数据 ---
-            metrics = self._extract_metrics(article_el)
+            metrics = {}
+            group_aria = re.search(r'<div[^>]*role="group"[^>]*aria-label="([^"]+)"', html)
+            aria_label = group_aria.group(1) if group_aria else ""
+
+            if aria_label:
+                reply_match = re.search(r"(\d[\d,]*)\s*repl", aria_label)
+                repost_match = re.search(r"(\d[\d,]*)\s*repo", aria_label)
+                like_match = re.search(r"(\d[\d,]*)\s*lik", aria_label)
+                view_match = re.search(r"(\d[\d,]*)\s*vie", aria_label)
+                if reply_match:
+                    metrics["reply"] = int(reply_match.group(1).replace(",", ""))
+                if repost_match:
+                    metrics["retweet"] = int(repost_match.group(1).replace(",", ""))
+                if like_match:
+                    metrics["like"] = int(like_match.group(1).replace(",", ""))
+                if view_match:
+                    metrics["view"] = int(view_match.group(1).replace(",", ""))
+
+            # Fallback: 从独立按钮 aria-label 解析
+            if not metrics:
+                for pattern, keyword in [
+                    (r'data-testid="reply"[^>]*aria-label="(\d[\d,]*)\s*repl', "reply"),
+                    (r'data-testid="retweet"[^>]*aria-label="(\d[\d,]*)\s*repo', "retweet"),
+                    (r'data-testid="like"[^>]*aria-label="(\d[\d,]*)\s*lik', "like"),
+                ]:
+                    btn_match = re.search(pattern, html)
+                    if btn_match:
+                        val = int(btn_match.group(1).replace(",", ""))
+                        metrics[keyword] = val
 
             # --- 话题标签 ---
-            hashtags = []
-            if text:
-                hashtags = re.findall(r"#(\w+)", text)
+            hashtags = re.findall(r"#(\w+)", text)
 
-            # --- 链接 ---
+            # --- 外部链接 ---
             urls = []
-            url_links = article_el.find_elements(By.CSS_SELECTOR, 'a[href*="http"]')
-            for ul in url_links:
-                href = ul.get_attribute("href") or ""
-                if "x.com" not in href and "twitter.com" not in href:
-                    urls.append(href)
+            url_matches = re.findall(r'href="(https?://[^"]+)"', html)
+            for u in url_matches:
+                if "x.com" not in u and "twitter.com" not in u:
+                    urls.append(u)
 
             # --- 媒体 ---
-            photos = article_el.find_elements(By.CSS_SELECTOR, self.PHOTO_SELECTOR)
-            media_count = len(photos)
+            media_count = len(re.findall(r'data-testid="tweetPhoto"', html))
 
             # --- 是否回复 ---
-            is_reply = "Replying to" in text or bool(
-                safe_find(article_el, '[data-testid="socialContext"]')
-            )
+            is_reply = "Replying to" in text or 'data-testid="socialContext"' in html
 
             return {
                 "id": tweet_id,
@@ -555,55 +563,8 @@ class SeleniumScraper:
             }
 
         except Exception as e:
-            print(f"  ⚠ 提取推文数据时出错: {e}")
+            print(f"  ⚠ 从HTML提取推文数据时出错: {e}")
             return None
-
-    def _extract_metrics(self, article_el):
-        """提取推文的互动数据（点赞/转发/回复/引用/查看）。"""
-        metrics = {}
-
-        # 主方案：从 role="group" 的 aria-label 解析
-        # 格式："392 replies, 122 reposts, 767 likes, 30 bookmarks, 442408 views"
-        group_el = safe_find(article_el, 'div[role="group"]')
-        aria_label = group_el.get_attribute("aria-label") if group_el else ""
-
-        if aria_label:
-            reply_match = re.search(r"(\d[\d,]*)\s*repl", aria_label)
-            repost_match = re.search(r"(\d[\d,]*)\s*repo", aria_label)
-            like_match = re.search(r"(\d[\d,]*)\s*lik", aria_label)
-            view_match = re.search(r"(\d[\d,]*)\s*vie", aria_label)
-
-            if reply_match:
-                metrics["reply"] = int(reply_match.group(1).replace(",", ""))
-            if repost_match:
-                metrics["retweet"] = int(repost_match.group(1).replace(",", ""))
-            if like_match:
-                metrics["like"] = int(like_match.group(1).replace(",", ""))
-            if view_match:
-                metrics["view"] = int(view_match.group(1).replace(",", ""))
-
-        # Fallback: 从独立按钮 aria-label 解析
-        if not metrics:
-            for sel, keyword in [
-                ('button[data-testid="reply"]', "repl"),
-                ('button[data-testid="retweet"]', "repo"),
-                ('button[data-testid="like"]', "lik"),
-            ]:
-                btn = safe_find(article_el, sel)
-                if btn:
-                    label = btn.get_attribute("aria-label") or ""
-                    match = re.search(r"(\d[\d,]*)", label)
-                    if not match:
-                        continue
-                    val = int(match.group(1).replace(",", ""))
-                    if "reply" in keyword:
-                        metrics["reply"] = val
-                    elif "repo" in keyword:
-                        metrics["retweet"] = val
-                    elif "lik" in keyword:
-                        metrics["like"] = val
-
-        return metrics
 
     # ----- 页面导航（带重试） -----
 
@@ -642,20 +603,19 @@ class SeleniumScraper:
             print(f"  ⚠ 推文加载超时，可能不存在或无权限访问")
             return []
 
-        # 提取第一条推文（原帖）
-        articles = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
-        if not articles:
+        # 通过 HTML 提取
+        html_list = self._get_visible_tweet_htmls()
+        if not html_list:
             print(f"  ✗ 未找到推文元素")
             return []
 
-        tweet_data = self._extract_tweet(articles[0])
+        tweet_data = self._extract_tweet_from_html(html_list[0])
         if tweet_data:
             self.tweet_ids.add(tweet_data["id"])
             self.got_count += 1
             print(f"  ✓ 获取成功: @{tweet_data['author_handle']}")
-            print(f"    内容: {tweet_data['text'][:80]}..."
-                  if len(tweet_data['text']) > 80
-                  else f"    内容: {tweet_data['text']}")
+            txt = tweet_data['text']
+            print(f"    内容: {txt[:80]}..." if len(txt) > 80 else f"    内容: {txt}")
             print(f"    点赞: {tweet_data['favorite_count']}  "
                   f"转发: {tweet_data['retweet_count']}  "
                   f"回复: {tweet_data['reply_count']}")
@@ -682,7 +642,7 @@ class SeleniumScraper:
         self._navigate(url, label="用户主页")
         time.sleep(3)
 
-        # 滚动加载（边滚边提取，_scroll_to_load 现在返回数据列表）
+        # 滚动加载
         tweets = self._scroll_to_load(
             count, label=f"@{screen_name}",
             since_date=since_date, until_date=until_date
@@ -704,7 +664,7 @@ class SeleniumScraper:
         self._navigate(url, label="搜索")
         time.sleep(3)
 
-        # 滚动加载（边滚边提取）
+        # 滚动加载
         tweets = self._scroll_to_load(count, label="搜索")
 
         self.got_count += len(tweets)
@@ -729,7 +689,7 @@ class SeleniumScraper:
             print(f"  ⚠ 页面加载超时")
             return []
 
-        # 滚动加载更多（边滚边提取）
+        # 滚动加载更多
         all_tweets = self._scroll_to_load(count + 1, label="回复")
 
         # 第一条是原帖
@@ -768,13 +728,12 @@ class SeleniumScraper:
             except Exception:
                 return replies
 
-            # 取推文详情页上的所有 article（第一条是原帖，后续是评论）
-            articles = self.driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR)
-            # 跳过第一条（原帖），取评论
-            reply_articles = articles[1:count + 1]
+            # 通过 HTML 提取，跳过第一条（原帖），取评论
+            html_list = self._get_visible_tweet_htmls()
+            reply_htmls = html_list[1:count + 1]
 
-            for article in reply_articles:
-                data = self._extract_tweet(article)
+            for html in reply_htmls:
+                data = self._extract_tweet_from_html(html)
                 if data:
                     replies.append(data)
 
