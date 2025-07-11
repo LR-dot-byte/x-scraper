@@ -22,7 +22,7 @@ import re
 import sys
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -757,18 +757,7 @@ class SeleniumScraper:
 
     def fetch_report(self, screen_name, since_date, until_date=None,
                      replies_per_tweet=20, max_comment_depth=1):
-        """一站式报告：用户时间线（新疆关键词过滤） + 评论 + 子评论。
-
-        Args:
-            screen_name: 用户 screen name
-            since_date: 起始日期 'YYYY-MM-DD'
-            until_date: 截止日期 'YYYY-MM-DD'（可选）
-            replies_per_tweet: 每条推文取多少条一级评论
-            max_comment_depth: 子评论深度（0=无, 1=一级子评论, 默认1）
-
-        Returns:
-            (posts, comments) 两个列表
-        """
+        """一站式报告。返回 (posts, comments, following, followers)。"""
         # 第一步：获取用户时间线
         print(f"\n{'='*40}")
         print(f"  第一步：抓取 @{screen_name} 的时间线")
@@ -781,9 +770,13 @@ class SeleniumScraper:
             keyword_filter=True,
         )
 
+        # 提取 Profile 统计数据
+        following, followers = self._get_profile_stats(screen_name)
+        print(f"  Profile: Following={following}, Followers={followers}")
+
         if not posts:
             print("✗ 该时间段内无新疆相关推文")
-            return [], []
+            return [], [], following, followers
 
         print(f"\n✓ 第一步完成：获取 {len(posts)} 条新疆相关推文")
 
@@ -821,31 +814,179 @@ class SeleniumScraper:
             print(f"  → 一级评论 {depth0} 条 + 子评论 {depth1} 条 = 共 {len(comments)} 条")
 
         print(f"\n✓ 第二步完成：共获取 {len(all_comments)} 条评论")
-        return posts, all_comments
+        return posts, all_comments, following, followers
 
     # ----- 数据输出 -----
 
-    def export_csv(self, data, output_path, extra_fields=None):
-        """将数据导出为 CSV 文件（UTF-8 编码）。"""
+    @staticmethod
+    def _fmt_time_posts(iso_str):
+        """ISO 8601 UTC → Posts 格式: YYYY.M.DD (CST)"""
+        if not iso_str:
+            return ""
+        try:
+            # Parse ISO 8601
+            dt_str = iso_str.replace("Z", "+00:00")
+            from datetime import timezone as tz
+            dt = datetime.fromisoformat(dt_str)
+            # Convert to CST (UTC+8)
+            cst = tz(timedelta(hours=8))
+            dt_cst = dt.astimezone(cst)
+            return f"{dt_cst.year}.{dt_cst.month}.{dt_cst.day}"
+        except Exception:
+            return iso_str[:10].replace("-", ".") if len(iso_str) >= 10 else iso_str
+
+    @staticmethod
+    def _fmt_time_comments(iso_str):
+        """ISO 8601 UTC → 评论格式: YYYY.M.DD HH:MM (CST)"""
+        if not iso_str:
+            return ""
+        try:
+            dt_str = iso_str.replace("Z", "+00:00")
+            from datetime import timezone as tz
+            dt = datetime.fromisoformat(dt_str)
+            cst = tz(timedelta(hours=8))
+            dt_cst = dt.astimezone(cst)
+            return f"{dt_cst.year}.{dt_cst.month}.{dt_cst.day} {dt_cst.hour:02d}:{dt_cst.minute:02d}"
+        except Exception:
+            return iso_str[:16].replace("-", ".").replace("T", " ") if len(iso_str) >= 16 else iso_str
+
+    @staticmethod
+    def _ensure_at(text):
+        """确保字符串以 @ 开头"""
+        if not text:
+            return ""
+        return f"@{text.lstrip('@')}"
+
+    def _get_profile_stats(self, screen_name):
+        """从用户主页提取 Following / Followers 数。"""
+        try:
+            js = r"""
+            var stats = {following: '', followers: ''};
+            var links = document.querySelectorAll('a[href*="/following"], a[href*="/verified_followers"]');
+            links.forEach(function(a) {
+              var href = a.getAttribute('href') || '';
+              var text = (a.innerText || '').trim();
+              var numMatch = text.match(/([\d,.]+)/);
+              var num = numMatch ? numMatch[1] : '';
+              if (href.includes('/following') && !href.includes('verified')) {
+                stats.following = num;
+              } else if (href.includes('/verified_followers')) {
+                stats.followers = num;
+              }
+            });
+            // fallback: look for spans with these numbers next to text
+            if (!stats.following || !stats.followers) {
+              var allText = document.body ? document.body.innerText : '';
+              var followingMatch = allText.match(/([\d,.]+)\s*Following/);
+              var followersMatch = allText.match(/([\d,.]+)\s*Followers/);
+              if (followingMatch) stats.following = followingMatch[1];
+              if (followersMatch) stats.followers = followersMatch[1];
+            }
+            return JSON.stringify(stats);
+            """
+            raw = self.driver.execute_script(js)
+            stats = json.loads(raw) if raw else {}
+            following = stats.get("following", "")
+            followers = stats.get("followers", "")
+            return following, followers
+        except Exception:
+            return "", ""
+
+    def export_posts_csv(self, data, output_path, profile_following="", profile_followers=""):
+        """导出帖子 CSV，列格式与 24-25年知情代理人涉疆数据.xlsx 一致。
+
+        列: ID, name, Following, Followers, time, text, translation,
+            tag, reply, repost, likes, views, vedios/photos, 评论条数
+        """
         if not data:
-            print("⚠ 无数据可输出")
+            print("⚠ 无帖子数据可输出")
             return
 
         fieldnames = [
-            "id", "text", "created_at", "author_name", "author_handle",
-            "favorite_count", "retweet_count", "reply_count", "quote_count",
-            "view_count", "hashtags", "urls", "media_count",
-            "is_reply", "tweet_url",
+            "ID", "name", "Following", "Followers", "time", "text",
+            "translation", "tag", "reply", "repost", "likes", "views",
+            "vedios/photos", "评论条数",
         ]
-        if extra_fields:
-            fieldnames.extend(extra_fields)
+
+        rows = []
+        for d in data:
+            handle = d.get("author_handle", "")
+            name = d.get("author_name", "")
+
+            # 只有目标用户本人的帖子才填 Following/Followers
+            following = ""
+            followers = ""
+            if profile_following and handle:
+                following = profile_following
+                followers = profile_followers
+
+            # 媒体列
+            media_count = d.get("media_count", 0)
+            media_str = "/" if media_count == 0 else str(media_count)
+
+            # tag 列：第一个外部链接 或 /
+            urls_str = d.get("urls", "")
+            if urls_str:
+                first_url = urls_str.split("|")[0]
+                tag = first_url if first_url else "/"
+            else:
+                tag = "/"
+
+            rows.append({
+                "ID": self._ensure_at(handle),
+                "name": name,
+                "Following": following,
+                "Followers": followers,
+                "time": self._fmt_time_posts(d.get("created_at", "")),
+                "text": d.get("text", ""),
+                "translation": d.get("translation", ""),
+                "tag": tag,
+                "reply": d.get("reply_count", 0),
+                "repost": d.get("retweet_count", 0),
+                "likes": d.get("favorite_count", 0),
+                "views": d.get("view_count", 0),
+                "vedios/photos": media_str,
+                "评论条数": d.get("reply_count", 0),
+            })
 
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(data)
+            writer.writerows(rows)
 
-        print(f"\n✓ 结果已保存到: {output_path}")
+        print(f"\n✓ 帖子结果已保存到: {output_path}")
+
+    def export_comments_csv(self, data, output_path):
+        """导出评论 CSV，列格式与 评论.xlsx 一致。
+
+        列: (序号), account, tweet_id, link, time, text, 贴主ID
+        """
+        if not data:
+            print("⚠ 无评论数据可输出")
+            return
+
+        fieldnames = [
+            "序号", "account", "tweet_id", "link", "time", "text", "贴主ID",
+        ]
+
+        rows = []
+        for i, d in enumerate(data):
+            rows.append({
+                "序号": i,
+                "account": d.get("author_name", ""),
+                "tweet_id": self._ensure_at(d.get("author_handle", "")),
+                "link": d.get("tweet_url", ""),
+                "time": self._fmt_time_comments(d.get("created_at", "")),
+                "text": d.get("text", ""),
+                "贴主ID": self._ensure_at(d.get("parent_tweet_author", "")),
+            })
+
+        with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
+        print(f"\n✓ 评论结果已保存到: {output_path}")
 
     def _make_output_path(self, query, suffix=""):
         """生成输出文件路径。"""
@@ -911,23 +1052,22 @@ class SeleniumScraper:
                 max_depth = getattr(cli_args, "depth", 1)
                 query = screen_name
 
-                posts, comments = self.fetch_report(
+                posts, comments, following, followers = self.fetch_report(
                     screen_name, since_date, until_date, reply_count, max_depth
                 )
 
-                # 输出两个 CSV
+                # 输出帖子 CSV（列对齐 24-25年知情代理人涉疆数据.xlsx）
                 post_path = getattr(cli_args, "output", None)
                 if not post_path:
                     post_path = self._make_output_path(query, "posts")
                 if posts:
-                    self.export_csv(posts, post_path)
+                    self.export_posts_csv(posts, post_path, following, followers)
 
+                # 输出评论 CSV（列对齐 评论.xlsx）
                 comment_path = None
                 if comments:
                     comment_path = self._make_output_path(query, "comments")
-                    extra = ["parent_tweet_id", "parent_tweet_author",
-                             "parent_comment_id", "depth"]
-                    self.export_csv(comments, comment_path, extra_fields=extra)
+                    self.export_comments_csv(comments, comment_path)
 
                 print_summary(
                     mode=mode,
@@ -960,7 +1100,7 @@ class SeleniumScraper:
             output_path = self._make_output_path(query, mode)
 
         if data:
-            self.export_csv(data, output_path)
+            self.export_posts_csv(data, output_path)
 
         print_summary(
             mode=mode,
