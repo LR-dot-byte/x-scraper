@@ -32,6 +32,25 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
 
+try:
+    import undetected_chromedriver as uc
+    HAS_UC = True
+except ImportError:
+    HAS_UC = False
+
+
+# ============================================================
+#  新疆相关关键词（用于过滤帖子）
+# ============================================================
+XINJIANG_KEYWORDS = [
+    # 中文
+    "新疆", "维吾尔", "东突", "东突厥",
+    # 英文
+    "Xinjiang", "Uyghur", "Uighur", "Uygur", "Uigur",
+    "East Turkestan", "East Turkistan",
+    # 其他
+    "ウイグル", "อุยกูร์",
+]
 
 # ============================================================
 #  工具函数
@@ -76,59 +95,15 @@ def print_summary(mode, query, requested, actual, output_path, skipped=0):
     print("-" * 50)
 
 
-def safe_get(obj, attr, default=None):
-    """安全获取对象属性，不存在时返回默认值。"""
-    try:
-        val = getattr(obj, attr, default)
-        return val if val is not None else default
-    except Exception:
-        return default
-
-
-def safe_find(element, selector, by=By.CSS_SELECTOR, default=None):
-    """安全查找子元素，不存在时返回默认值。"""
-    try:
-        return element.find_element(by, selector)
-    except Exception:
-        return default
-
-
-def safe_text(element, selector=None, default=""):
-    """安全获取元素文本。"""
-    try:
-        if selector:
-            el = element.find_element(By.CSS_SELECTOR, selector)
-        else:
-            el = element
-        return el.text.strip() if el else default
-    except Exception:
-        return default
-
-
-def parse_count(text):
-    """将 '1.2K' / '3.4M' / '123' 等文本解析为整数。"""
+def matches_xinjiang(text):
+    """检查文本是否匹配新疆相关关键词（大小写不敏感）。"""
     if not text:
-        return 0
-    text = text.strip().lower().replace(",", "")
-    try:
-        if "k" in text:
-            return int(float(text.replace("k", "")) * 1000)
-        elif "m" in text:
-            return int(float(text.replace("m", "")) * 1000000)
-        elif "b" in text:
-            return int(float(text.replace("b", "")) * 1000000000)
-        else:
-            return int(float(text))
-    except (ValueError, TypeError):
-        return 0
-
-
-def parse_datetime(time_element):
-    """从 <time datetime='...'> 元素提取 ISO 时间字符串。"""
-    if time_element is None:
-        return ""
-    dt_attr = time_element.get_attribute("datetime")
-    return dt_attr if dt_attr else ""
+        return False
+    text_lower = text.lower()
+    for kw in XINJIANG_KEYWORDS:
+        if kw.lower() in text_lower:
+            return True
+    return False
 
 
 # ============================================================
@@ -198,11 +173,157 @@ class SeleniumScraper:
     """X (Twitter) 帖子爬虫
 
     使用 Selenium WebDriver 控制 Chrome 浏览器，
-    模拟真实用户操作，从页面 DOM 中提取推文数据。
+    模拟真实用户操作，通过 JS 原子提取页面数据避免 stale element。
     """
 
-    # ---- X.com DOM 选择器 ----
     TWEET_SELECTOR = 'article[data-testid="tweet"]'
+
+    # ---- JS 脚本：在浏览器端原子提取所有可见推文的结构化数据 ----
+    _EXTRACT_TWEETS_JS = r"""
+    const results = [];
+    const articles = document.querySelectorAll('article[data-testid="tweet"]');
+    articles.forEach((article, idx) => {
+      try {
+        // --- 推文链接 & ID ---
+        let tweetId = '', tweetUrl = '';
+        const statusLinks = article.querySelectorAll('a[href*="/status/"]');
+        for (const link of statusLinks) {
+          const href = link.getAttribute('href') || '';
+          const match = href.match(/\/status\/(\d+)/);
+          if (match) { tweetId = match[1]; tweetUrl = 'https://x.com' + href.split('?')[0]; break; }
+        }
+        if (!tweetId) return;
+
+        // --- 文本（使用 innerText 获取完整文本，保留换行）---
+        const textEl = article.querySelector('[data-testid="tweetText"]');
+        const text = textEl ? textEl.innerText.trim() : '';
+
+        // --- 时间 ---
+        const timeEl = article.querySelector('time');
+        const createdAt = timeEl ? (timeEl.getAttribute('datetime') || '') : '';
+
+        // --- 作者信息 ---
+        let authorName = '', authorHandle = '';
+
+        // 从 UserAvatar-Container 提取 handle
+        const avatarEls = article.querySelectorAll('[data-testid^="UserAvatar-Container-"]');
+        if (avatarEls.length > 0) {
+          const testid = avatarEls[0].getAttribute('data-testid') || '';
+          authorHandle = testid.replace('UserAvatar-Container-', '');
+        }
+
+        // 从用户链接提取显示名称
+        const userLinks = article.querySelectorAll('a[role="link"]');
+        for (const link of userLinks) {
+          const href = link.getAttribute('href') || '';
+          // 匹配 href="/handle" 格式
+          const handleMatch = href.match(/^\/(\w+)$/);
+          if (handleMatch) {
+            const innerSpan = link.querySelector('span span');
+            if (innerSpan) {
+              const name = innerSpan.innerText.trim();
+              if (name && name.length < 80) {
+                authorName = name;
+                if (!authorHandle) authorHandle = handleMatch[1];
+                break;
+              }
+            }
+          }
+        }
+
+        // Fallback：从第一个指向用户的链接提取
+        if (!authorName) {
+          for (const link of userLinks) {
+            const href = link.getAttribute('href') || '';
+            const hrefMatch = href.match(/^\/(\w+)$/);
+            if (hrefMatch) {
+              const linkText = link.innerText.trim();
+              if (linkText && !linkText.startsWith('@') && linkText.length < 80) {
+                authorName = linkText;
+                if (!authorHandle) authorHandle = hrefMatch[1];
+                break;
+              }
+            }
+          }
+        }
+
+        if (!authorName && authorHandle) authorName = authorHandle;
+
+        // --- 互动数据（从 role="group" aria-label 解析）---
+        let likeCount = 0, retweetCount = 0, replyCount = 0, viewCount = 0;
+        const groupEl = article.querySelector('div[role="group"]');
+        if (groupEl) {
+          const aria = groupEl.getAttribute('aria-label') || '';
+          let m;
+          m = aria.match(/([\d,]+)\s*repl/i); if (m) replyCount = parseInt(m[1].replace(/,/g, ''));
+          m = aria.match(/([\d,]+)\s*repo/i); if (m) retweetCount = parseInt(m[1].replace(/,/g, ''));
+          m = aria.match(/([\d,]+)\s*lik/i); if (m) likeCount = parseInt(m[1].replace(/,/g, ''));
+          m = aria.match(/([\d,]+)\s*vie/i); if (m) viewCount = parseInt(m[1].replace(/,/g, ''));
+        }
+
+        // --- 话题标签 ---
+        const hashtags = (text.match(/#(\w+)/g) || []).map(h => h.replace('#', ''));
+
+        // --- 外部链接 ---
+        const urlElements = article.querySelectorAll('a[href*="http"]');
+        const urls = [];
+        for (const a of urlElements) {
+          const href = a.getAttribute('href') || '';
+          if (!href.includes('x.com') && !href.includes('twitter.com')) {
+            urls.push(href);
+          }
+        }
+
+        // --- 媒体 ---
+        const mediaCount = article.querySelectorAll('[data-testid="tweetPhoto"]').length;
+
+        // --- 是否回复 / 回复对象 ---
+        const socialContext = article.querySelector('[data-testid="socialContext"]');
+        const isReply = text.includes('Replying to') || !!socialContext;
+        let replyTo = '';
+        if (socialContext) {
+          replyTo = socialContext.innerText.trim();
+        }
+
+        // --- 推文深度（0=主帖, 1=一级评论, 2=二级评论...）---
+        let depth = 0;
+        // 通过检查是否在嵌套的线程容器中判断深度
+        let parent = article.parentElement;
+        while (parent) {
+          if (parent.getAttribute('data-testid') === 'cellInnerDiv') {
+            // 检查父级链中是否有多个嵌套的线程
+          }
+          parent = parent.parentElement;
+        }
+        // 简单判断：如果 socialContext 包含 @ 回复，可能是深度>0
+        if (socialContext) {
+          const ctxText = socialContext.innerText || '';
+          // "Replying to @someone and @others" -> 一级评论
+          // 如果是一级评论的回复，通常会显示 "Replying to @commenter"
+        }
+
+        results.push({
+          id: tweetId,
+          text: text.replace(/\n/g, ' '),
+          created_at: createdAt,
+          author_name: authorName,
+          author_handle: authorHandle,
+          favorite_count: likeCount,
+          retweet_count: retweetCount,
+          reply_count: replyCount,
+          quote_count: 0,
+          view_count: viewCount,
+          hashtags: hashtags.join(','),
+          urls: urls.slice(0, 5).join('|'),
+          media_count: mediaCount,
+          is_reply: isReply,
+          reply_to: replyTo,
+          tweet_url: tweetUrl,
+        });
+      } catch(e) {}
+    });
+    return JSON.stringify(results);
+    """
 
     def __init__(self, config):
         self.config = config
@@ -224,6 +345,9 @@ class SeleniumScraper:
         self.page_timeout = self.selenium_cfg.get("page_load_timeout", 60)
         self.scroll_pause = self.selenium_cfg.get("scroll_pause_seconds", 3)
 
+        # Xinjiang 关键词过滤
+        self.filter_xinjiang = config.get("filter", {}).get("xinjiang_only", True)
+
         # 去重 & 计数
         self.got_count = 0
         self.skipped_count = 0
@@ -242,49 +366,80 @@ class SeleniumScraper:
     # ----- WebDriver 初始化 -----
 
     def _init_driver(self):
-        """创建并配置 Chrome WebDriver。"""
+        """创建并配置 Chrome WebDriver。优先使用 undetected-chromedriver。"""
         options = Options()
 
-        # 反自动化检测
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
+        selenium_cfg = self.config.get("selenium", {})
+        profile_dir = selenium_cfg.get("profile_dir", "")
+        use_profile = selenium_cfg.get("use_existing_profile", False)
+        use_uc = selenium_cfg.get("use_undetected", True)
 
-        # 移动端 User-Agent（社交平台对移动端限制更宽松）
-        options.add_argument(
-            "--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-            "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-        )
-
-        # 窗口尺寸（模拟手机屏幕）
-        options.add_argument("--window-size=390,844")
+        if use_profile and profile_dir and os.path.isdir(profile_dir):
+            options.add_argument(f"--user-data-dir={profile_dir}")
+            print(f"✓ 使用已有 Chrome Profile: {profile_dir}")
+        else:
+            options.add_argument(
+                "--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            )
+            options.add_argument("--window-size=390,844")
 
         if self.headless:
             options.add_argument("--headless=new")
 
-        # 其他优化
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-notifications")
-        options.add_argument("--disable-logging")
         options.add_experimental_option("prefs", {
             "profile.default_content_setting_values.notifications": 2,
             "credentials_enable_service": False,
         })
 
-        service = Service(ChromeDriverManager().install())
-        self.driver = webdriver.Chrome(service=service, options=options)
+        # 使用 undetected-chromedriver（绕过 X 反爬检测）
+        if use_uc and HAS_UC and not use_profile:
+            print("✓ 使用 undetected-chromedriver（反检测模式）")
+            self.driver = uc.Chrome(options=options)
+        else:
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
+
         self.driver.set_page_load_timeout(self.page_timeout)
         self.driver.implicitly_wait(5)
 
     # ----- 认证 -----
 
     def login(self):
-        """导航到 x.com 并注入 Cookie 完成认证。"""
+        """导航到 x.com 并完成认证。"""
         self._init_driver()
-        auth = self.config.get("auth", {})
 
+        selenium_cfg = self.config.get("selenium", {})
+        use_profile = selenium_cfg.get("use_existing_profile", False)
+
+        if use_profile:
+            # 使用已有 Chrome Profile，直接访问 x.com 验证登录态
+            print("正在访问 x.com (使用已有 Profile)...")
+            for attempt in range(3):
+                try:
+                    self.driver.get("https://x.com")
+                    break
+                except Exception:
+                    if attempt < 2:
+                        print(f"  ⚠ 页面加载超时，重试 ({attempt+1}/3)...")
+                        time.sleep(5)
+            time.sleep(4)
+
+            page_source = self.driver.page_source
+            if "Something went wrong" in page_source:
+                print("⚠ X 返回错误页面，可能需要等待限流解除")
+            elif "Sign in" in page_source or "login" in self.driver.current_url.lower():
+                print("⚠ Profile 未登录 X，请在 Chrome 中先登录 x.com 后再试")
+            else:
+                print("✓ Profile 登录态有效")
+            return
+
+        # 否则使用 Cookie 注入方式
+        auth = self.config.get("auth", {})
         cookies_file = auth.get("cookies_file", "")
         if not cookies_file or not os.path.isfile(cookies_file):
             print("✗ Cookie 文件不存在或未配置")
@@ -296,13 +451,13 @@ class SeleniumScraper:
         with open(cookies_file, "r", encoding="utf-8") as f:
             cookies = json.load(f)
 
-        # 先访问 x.com 建立域名上下文（带重试）
+        # 先访问 x.com 建立域名上下文
         print("正在访问 x.com ...")
         for attempt in range(3):
             try:
                 self.driver.get("https://x.com")
                 break
-            except Exception as e:
+            except Exception:
                 if attempt < 2:
                     print(f"  ⚠ 页面加载超时，重试 ({attempt+1}/3)...")
                     time.sleep(5)
@@ -338,27 +493,40 @@ class SeleniumScraper:
                     print("  ⚠ 页面加载较慢，继续尝试...")
         time.sleep(3)
 
-        # 简单校验
         page_source = self.driver.page_source
-        if "Sign in" in page_source or "login" in self.driver.current_url.lower():
+        if "Something went wrong" in page_source:
+            print("⚠ X 返回错误页面，可能需要等待限流解除后重试")
+        elif "Sign in" in page_source or "login" in self.driver.current_url.lower():
             print("⚠ 可能未成功登录，请检查 Cookie 是否有效")
         else:
             print("✓ Cookie 登录成功")
 
+    # ----- JS 批量提取 -----
+
+    def _extract_tweets_batch(self):
+        """通过 JS 在浏览器端原子提取所有可见推文数据，返回 dict 列表。"""
+        try:
+            json_str = self.driver.execute_script(self._EXTRACT_TWEETS_JS)
+            if json_str and len(json_str) > 2:  # 不是空数组 "[]"
+                return json.loads(json_str)
+            return []
+        except Exception as e:
+            print(f"  ⚠ JS 批量提取推文失败: {e}")
+            return []
+
     # ----- 滚动加载 -----
 
-    def _scroll_to_load(self, target_count, label="推文", max_scrolls=200, since_date=None, until_date=None):
-        """滚动页面加载更多推文，同时完成数据提取和去重。
-
-        X.com 使用虚拟列表，DOM 中同时只保留约 10-15 个 article 元素，
-        滚动时旧元素被回收。使用 JS 提取 outerHTML 避免 stale element。
+    def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
+                        since_date=None, until_date=None, keyword_filter=False):
+        """滚动页面加载更多推文。
 
         Args:
             target_count: 目标推文数量
             label: 日志标签
             max_scrolls: 最大滚动次数
-            since_date: 起始日期 'YYYY-MM-DD'，早于此日期的推文出现时停止
-            until_date: 截止日期 'YYYY-MM-DD'，晚于此日期的推文跳过
+            since_date: 起始日期 'YYYY-MM-DD'
+            until_date: 截止日期 'YYYY-MM-DD'
+            keyword_filter: 是否启用新疆关键词过滤
 
         Returns:
             推文数据 dict 列表（已去重）
@@ -368,25 +536,34 @@ class SeleniumScraper:
         stale_count = 0
 
         for scroll_num in range(max_scrolls):
-            # 使用 JS 一次性获取所有可见推文的 outerHTML（原子操作，避免 stale element）
-            html_list = self._get_visible_tweet_htmls()
+            batch = self._extract_tweets_batch()
 
-            # 逐条解析 HTML
-            for html in html_list:
+            for data in batch:
                 if len(collected) >= target_count:
                     break
-                data = self._extract_tweet_from_html(html)
-                if data and data["id"] not in self.tweet_ids:
-                    # 时间过滤
-                    created = data.get("created_at", "")
-                    if since_date and created and created[:10] < since_date:
-                        print(f"  推文时间 {created[:10]} 早于 {since_date}，停止滚动")
-                        self._stop_early = True
-                        break
-                    if until_date and created and created[:10] > until_date:
-                        continue  # 跳过但不停止滚动
-                    self.tweet_ids.add(data["id"])
-                    collected.append(data)
+                if not data or not data.get("id"):
+                    continue
+                if data["id"] in self.tweet_ids:
+                    continue
+
+                # 关键词过滤
+                if keyword_filter:
+                    text = data.get("text", "")
+                    if not matches_xinjiang(text):
+                        self.skipped_count += 1
+                        continue
+
+                # 时间过滤
+                created = data.get("created_at", "")
+                if since_date and created and created[:10] < since_date:
+                    print(f"  推文时间 {created[:10]} 早于 {since_date}，停止滚动")
+                    self._stop_early = True
+                    break
+                if until_date and created and created[:10] > until_date:
+                    continue
+
+                self.tweet_ids.add(data["id"])
+                collected.append(data)
 
             current_unique = len(collected)
 
@@ -394,12 +571,10 @@ class SeleniumScraper:
                 print(f"  已收集 {current_unique} 条推文 (目标 {target_count})")
                 break
 
-            # 时间早于 since_date 则停止
             if getattr(self, '_stop_early', False):
                 self._stop_early = False
                 break
 
-            # 基于唯一推文数量判断是否还有新内容（容忍虚拟列表波动）
             if current_unique == last_unique:
                 stale_count += 1
                 if stale_count >= 5:
@@ -417,154 +592,6 @@ class SeleniumScraper:
             self.rate_limiter.batch_pause()
 
         return collected
-
-    def _get_visible_tweet_htmls(self):
-        """通过 JS 一次性获取页面上所有可见推文的 outerHTML（原子操作）。"""
-        try:
-            js = """
-            var articles = document.querySelectorAll('article[data-testid="tweet"]');
-            var htmls = [];
-            articles.forEach(function(a) { htmls.push(a.outerHTML); });
-            return htmls;
-            """
-            return self.driver.execute_script(js) or []
-        except Exception as e:
-            print(f"  ⚠ JS 获取推文 HTML 失败: {e}")
-            return []
-
-    # ----- 推文数据提取（基于 HTML 字符串，不依赖 Selenium 元素引用）-----
-
-    def _extract_tweet_from_html(self, html):
-        """从推文 HTML 字符串中提取数据字典（无 Selenium 依赖，无 stale element 风险）。"""
-        try:
-            # --- 推文链接 & ID ---
-            tweet_id = ""
-            tweet_url = ""
-            id_match = re.search(r'/status/(\d+)', html)
-            if id_match:
-                tweet_id = id_match.group(1)
-                tweet_url = f"https://x.com/i/status/{tweet_id}"
-
-            if not tweet_id:
-                return None
-
-            # --- 文本 ---
-            text = ""
-            text_match = re.search(r'data-testid="tweetText"[^>]*>(.*?)</div>', html, re.DOTALL)
-            if text_match:
-                # 提取所有 span 中的文本
-                text_spans = re.findall(r'<span[^>]*class="[^"]*css-[^"]*"[^>]*>(.*?)</span>', text_match.group(1))
-                if text_spans:
-                    text = "".join(text_spans)
-                else:
-                    # 纯文本 fallback
-                    text = re.sub(r'<[^>]+>', '', text_match.group(1))
-                text = text.strip()
-
-            if not text:
-                # Fallback: 取整个 article 的文本（去头去尾）
-                raw = re.sub(r'<[^>]+>', ' ', html)
-                raw = re.sub(r'\s+', ' ', raw).strip()
-                # 尝试截取有意义的部分
-                text = raw[:500]
-
-            # --- 时间 ---
-            created_at = ""
-            time_match = re.search(r'<time[^>]*datetime="([^"]+)"', html)
-            if time_match:
-                created_at = time_match.group(1)
-
-            # --- 作者信息 ---
-            author_name = ""
-            author_handle = ""
-            avatar_match = re.search(r'data-testid="UserAvatar-Container-(\w+)"', html)
-            if avatar_match:
-                author_handle = avatar_match.group(1)
-
-            # 从用户链接提取显示名称
-            name_match = re.search(r'<span[^>]*><span[^>]*>([^<]+)</span></span>', html)
-            if name_match:
-                author_name = name_match.group(1).strip()
-            elif author_handle:
-                # 从 href 中查找显示名称
-                name_href_match = re.search(
-                    rf'href="/{re.escape(author_handle)}"[^>]*aria-label="([^"]+)"',
-                    html
-                )
-                if name_href_match and not name_href_match.group(1).startswith("@"):
-                    author_name = name_href_match.group(1)
-
-            if not author_name:
-                author_name = author_handle
-
-            # --- 互动数据 ---
-            metrics = {}
-            group_aria = re.search(r'<div[^>]*role="group"[^>]*aria-label="([^"]+)"', html)
-            aria_label = group_aria.group(1) if group_aria else ""
-
-            if aria_label:
-                reply_match = re.search(r"(\d[\d,]*)\s*repl", aria_label)
-                repost_match = re.search(r"(\d[\d,]*)\s*repo", aria_label)
-                like_match = re.search(r"(\d[\d,]*)\s*lik", aria_label)
-                view_match = re.search(r"(\d[\d,]*)\s*vie", aria_label)
-                if reply_match:
-                    metrics["reply"] = int(reply_match.group(1).replace(",", ""))
-                if repost_match:
-                    metrics["retweet"] = int(repost_match.group(1).replace(",", ""))
-                if like_match:
-                    metrics["like"] = int(like_match.group(1).replace(",", ""))
-                if view_match:
-                    metrics["view"] = int(view_match.group(1).replace(",", ""))
-
-            # Fallback: 从独立按钮 aria-label 解析
-            if not metrics:
-                for pattern, keyword in [
-                    (r'data-testid="reply"[^>]*aria-label="(\d[\d,]*)\s*repl', "reply"),
-                    (r'data-testid="retweet"[^>]*aria-label="(\d[\d,]*)\s*repo', "retweet"),
-                    (r'data-testid="like"[^>]*aria-label="(\d[\d,]*)\s*lik', "like"),
-                ]:
-                    btn_match = re.search(pattern, html)
-                    if btn_match:
-                        val = int(btn_match.group(1).replace(",", ""))
-                        metrics[keyword] = val
-
-            # --- 话题标签 ---
-            hashtags = re.findall(r"#(\w+)", text)
-
-            # --- 外部链接 ---
-            urls = []
-            url_matches = re.findall(r'href="(https?://[^"]+)"', html)
-            for u in url_matches:
-                if "x.com" not in u and "twitter.com" not in u:
-                    urls.append(u)
-
-            # --- 媒体 ---
-            media_count = len(re.findall(r'data-testid="tweetPhoto"', html))
-
-            # --- 是否回复 ---
-            is_reply = "Replying to" in text or 'data-testid="socialContext"' in html
-
-            return {
-                "id": tweet_id,
-                "text": text.replace("\n", " "),
-                "created_at": created_at,
-                "author_name": author_name,
-                "author_handle": author_handle,
-                "favorite_count": metrics.get("like", 0),
-                "retweet_count": metrics.get("retweet", 0),
-                "reply_count": metrics.get("reply", 0),
-                "quote_count": metrics.get("quote", 0),
-                "view_count": metrics.get("view", 0),
-                "hashtags": ",".join(hashtags),
-                "urls": "|".join(urls[:5]),
-                "media_count": media_count,
-                "is_reply": is_reply,
-                "tweet_url": tweet_url,
-            }
-
-        except Exception as e:
-            print(f"  ⚠ 从HTML提取推文数据时出错: {e}")
-            return None
 
     # ----- 页面导航（带重试） -----
 
@@ -594,7 +621,6 @@ class SeleniumScraper:
         self._navigate(url, label="推文")
         time.sleep(3)
 
-        # 等待推文元素加载
         try:
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, self.TWEET_SELECTOR))
@@ -603,53 +629,47 @@ class SeleniumScraper:
             print(f"  ⚠ 推文加载超时，可能不存在或无权限访问")
             return []
 
-        # 通过 HTML 提取
-        html_list = self._get_visible_tweet_htmls()
-        if not html_list:
+        batch = self._extract_tweets_batch()
+        if not batch:
             print(f"  ✗ 未找到推文元素")
             return []
 
-        tweet_data = self._extract_tweet_from_html(html_list[0])
+        tweet_data = batch[0]
         if tweet_data:
             self.tweet_ids.add(tweet_data["id"])
             self.got_count += 1
             print(f"  ✓ 获取成功: @{tweet_data['author_handle']}")
             txt = tweet_data['text']
             print(f"    内容: {txt[:80]}..." if len(txt) > 80 else f"    内容: {txt}")
-            print(f"    点赞: {tweet_data['favorite_count']}  "
-                  f"转发: {tweet_data['retweet_count']}  "
-                  f"回复: {tweet_data['reply_count']}")
             return [tweet_data]
         return []
 
-    def fetch_user_timeline(self, screen_name, count=20, since_date=None, until_date=None):
-        """获取指定用户的最新推文。
-
-        Args:
-            screen_name: 用户 screen name
-            count: 目标推文数量
-            since_date: 起始日期 'YYYY-MM-DD'，不传则不限
-            until_date: 截止日期 'YYYY-MM-DD'，不传则不限
-        """
+    def fetch_user_timeline(self, screen_name, count=20, since_date=None, until_date=None,
+                            keyword_filter=False):
+        """获取指定用户的最新推文。"""
         screen_name = screen_name.lstrip("@")
         url = f"https://x.com/{screen_name}"
         print(f"正在访问用户主页: @{screen_name}")
         if since_date or until_date:
             print(f"时间段: {since_date or '不限'} ~ {until_date or '不限'}")
+        if keyword_filter:
+            print(f"关键词过滤: 新疆/Uyghur/Xinjiang")
         print(f"目标: {count} 条推文")
 
         self.rate_limiter.wait(label="访问主页")
         self._navigate(url, label="用户主页")
         time.sleep(3)
 
-        # 滚动加载
         tweets = self._scroll_to_load(
             count, label=f"@{screen_name}",
-            since_date=since_date, until_date=until_date
+            since_date=since_date, until_date=until_date,
+            keyword_filter=keyword_filter,
         )
 
         self.got_count += len(tweets)
         print(f"  ✓ 实际获取 {len(tweets)} 条 @{screen_name} 的推文")
+        if keyword_filter and self.skipped_count > 0:
+            print(f"     (跳过 {self.skipped_count} 条不相关推文)")
         return tweets
 
     def fetch_search_tweets(self, query, count=20, product="Latest"):
@@ -664,57 +684,25 @@ class SeleniumScraper:
         self._navigate(url, label="搜索")
         time.sleep(3)
 
-        # 滚动加载
         tweets = self._scroll_to_load(count, label="搜索")
-
         self.got_count += len(tweets)
         print(f"  ✓ 实际获取 {len(tweets)} 条搜索结果")
         return tweets
 
-    def fetch_tweet_replies(self, tweet_id, count=20):
-        """获取指定推文的回复列表（含原帖）。"""
-        url = f"https://x.com/i/status/{tweet_id}"
-        print(f"正在获取推文 {tweet_id} 及其回复 (目标 {count} 条)...")
+    # ----- 评论 & 子评论抓取 -----
 
-        self.rate_limiter.wait(label="获取推文及回复")
-        self._navigate(url, label="推文及回复")
-        time.sleep(3)
-
-        # 等待加载
-        try:
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, self.TWEET_SELECTOR))
-            )
-        except Exception:
-            print(f"  ⚠ 页面加载超时")
-            return []
-
-        # 滚动加载更多
-        all_tweets = self._scroll_to_load(count + 1, label="回复")
-
-        # 第一条是原帖
-        if all_tweets:
-            all_tweets[0]["is_original"] = True
-            for t in all_tweets[1:]:
-                t["is_original"] = False
-
-        self.got_count += len(all_tweets)
-        print(f"  ✓ 实际获取原帖 + {max(0, len(all_tweets)-1)} 条回复")
-        return all_tweets
-
-    # ----- 批量评论抓取 -----
-
-    def _fetch_top_replies(self, tweet_url, count=5):
-        """获取单条推文的前 N 条热评（含评论点赞数）。
+    def _fetch_comments_for_tweet(self, tweet_url, max_comments=20, max_depth=1):
+        """获取指定推文的所有评论及子评论（递归）。
 
         Args:
             tweet_url: 推文链接
-            count: 取前多少条评论
+            max_comments: 最多获取多少条一级评论
+            max_depth: 子评论递归深度（0=仅一级评论, 1=含子评论, 默认1）
 
         Returns:
-            dict 列表，每条包含评论内容、点赞数、作者等
+            list[dict]: 所有评论（含子评论），每条包含 parent_tweet_id, parent_author, depth 字段
         """
-        replies = []
+        all_comments = []
         try:
             self.rate_limiter.wait(label="获取评论")
             self._navigate(tweet_url, label="推文详情")
@@ -726,30 +714,57 @@ class SeleniumScraper:
                     EC.presence_of_element_located((By.CSS_SELECTOR, self.TWEET_SELECTOR))
                 )
             except Exception:
-                return replies
+                return all_comments
 
-            # 通过 HTML 提取，跳过第一条（原帖），取评论
-            html_list = self._get_visible_tweet_htmls()
-            reply_htmls = html_list[1:count + 1]
+            # 滚动加载更多评论
+            original_ids = self.tweet_ids.copy()
+            comments = self._scroll_to_load(
+                max_comments + 1,  # +1 因为第一条是原帖
+                label="评论",
+                max_scrolls=100,
+            )
 
-            for html in reply_htmls:
-                data = self._extract_tweet_from_html(html)
-                if data:
-                    replies.append(data)
+            # 过滤掉原帖和已处理的
+            for c in comments:
+                if c["id"] in original_ids:
+                    continue
+                c["depth"] = 0  # 一级评论
+                all_comments.append(c)
+
+            # 递归获取子评论
+            if max_depth > 0:
+                top_level = [c for c in all_comments if c.get("depth", 0) == 0]
+                for i, comment in enumerate(top_level):
+                    if comment.get("reply_count", 0) > 0:
+                        sub_url = comment.get("tweet_url", "")
+                        if not sub_url:
+                            continue
+                        print(f"    [{i+1}/{len(top_level)}] 抓取子评论: "
+                              f"@{comment['author_handle']} 的评论 (已有{comment['reply_count']}条回复)...")
+                        sub_comments = self._fetch_comments_for_tweet(
+                            sub_url, max_comments=20, max_depth=max_depth - 1
+                        )
+                        for sc in sub_comments:
+                            sc["depth"] = 1
+                            sc["parent_comment_id"] = comment["id"]
+                        all_comments.extend(sub_comments)
+                        print(f"      → 获取 {len(sub_comments)} 条子评论")
 
         except Exception as e:
             print(f"  ⚠ 获取评论时出错: {e}")
 
-        return replies
+        return all_comments
 
-    def fetch_report(self, screen_name, since_date, until_date=None, replies_per_tweet=5):
-        """一站式报告：用户时间线 + 每条推文的热评。
+    def fetch_report(self, screen_name, since_date, until_date=None,
+                     replies_per_tweet=20, max_comment_depth=1):
+        """一站式报告：用户时间线（新疆关键词过滤） + 评论 + 子评论。
 
         Args:
             screen_name: 用户 screen name
             since_date: 起始日期 'YYYY-MM-DD'
             until_date: 截止日期 'YYYY-MM-DD'（可选）
-            replies_per_tweet: 每条推文取多少条热评
+            replies_per_tweet: 每条推文取多少条一级评论
+            max_comment_depth: 子评论深度（0=无, 1=一级子评论, 默认1）
 
         Returns:
             (posts, comments) 两个列表
@@ -757,22 +772,24 @@ class SeleniumScraper:
         # 第一步：获取用户时间线
         print(f"\n{'='*40}")
         print(f"  第一步：抓取 @{screen_name} 的时间线")
+        print(f"  关键词: 新疆 / Xinjiang / Uyghur")
         print(f"{'='*40}")
         posts = self.fetch_user_timeline(
-            screen_name, count=9999,  # 不限数量，靠时间过滤控制
+            screen_name, count=9999,
             since_date=since_date,
             until_date=until_date,
+            keyword_filter=True,
         )
 
         if not posts:
-            print("✗ 该时间段内无推文")
+            print("✗ 该时间段内无新疆相关推文")
             return [], []
 
-        print(f"\n✓ 第一步完成：获取 {len(posts)} 条推文")
+        print(f"\n✓ 第一步完成：获取 {len(posts)} 条新疆相关推文")
 
-        # 第二步：对每条推文抓取热评
+        # 第二步：对每条推文抓取评论（含子评论）
         print(f"\n{'='*40}")
-        print(f"  第二步：抓取每条推文的前 {replies_per_tweet} 条热评")
+        print(f"  第二步：抓取每条推文的评论 (一级{replies_per_tweet}条 + 子评论深度{max_comment_depth})")
         print(f"{'='*40}")
 
         all_comments = []
@@ -781,16 +798,27 @@ class SeleniumScraper:
             if not tweet_url:
                 continue
 
-            print(f"\n[{i+1}/{len(posts)}] {post['text'][:60]}...")
-            comments = self._fetch_top_replies(tweet_url, count=replies_per_tweet)
+            txt_preview = post['text'][:60].replace('\n', ' ')
+            print(f"\n[{i+1}/{len(posts)}] {txt_preview}...")
+            print(f"    作者: @{post['author_handle']} | {post['created_at'][:16] if post.get('created_at') else '?'}")
 
-            # 给每条评论打上所属推文 ID
+            comments = self._fetch_comments_for_tweet(
+                tweet_url,
+                max_comments=replies_per_tweet,
+                max_depth=max_comment_depth,
+            )
+
+            # 给每条评论打上所属推文信息
             for c in comments:
                 c["parent_tweet_id"] = post["id"]
-                c["parent_author"] = post["author_handle"]
+                c["parent_tweet_author"] = post["author_handle"]
+                if "parent_comment_id" not in c:
+                    c["parent_comment_id"] = ""
 
             all_comments.extend(comments)
-            print(f"  → 获取 {len(comments)} 条评论")
+            depth0 = sum(1 for c in comments if c.get("depth", 0) == 0)
+            depth1 = sum(1 for c in comments if c.get("depth", 0) >= 1)
+            print(f"  → 一级评论 {depth0} 条 + 子评论 {depth1} 条 = 共 {len(comments)} 条")
 
         print(f"\n✓ 第二步完成：共获取 {len(all_comments)} 条评论")
         return posts, all_comments
@@ -798,13 +826,7 @@ class SeleniumScraper:
     # ----- 数据输出 -----
 
     def export_csv(self, data, output_path, extra_fields=None):
-        """将数据导出为 CSV 文件（UTF-8 编码）。
-
-        Args:
-            data: 字典列表
-            output_path: 输出文件路径
-            extra_fields: 额外字段名列表（如评论的 parent_tweet_id）
-        """
+        """将数据导出为 CSV 文件（UTF-8 编码）。"""
         if not data:
             print("⚠ 无数据可输出")
             return
@@ -870,17 +892,27 @@ class SeleniumScraper:
                 tweet_id = cli_args.tweet_id
                 count = cli_args.count
                 query = tweet_id
-                data = self.fetch_tweet_replies(tweet_id, count)
+                # 使用新的评论抓取方法
+                url = f"https://x.com/i/status/{tweet_id}"
+                self.rate_limiter.wait(label="获取推文")
+                self._navigate(url, label="推文详情")
+                time.sleep(3)
+                data = self._scroll_to_load(count + 1, label="回复")
+                if data:
+                    for t in data[1:]:
+                        t["depth"] = 0
+                    data[0]["is_original"] = True
 
             elif mode == "report":
                 screen_name = cli_args.screen_name
                 since_date = cli_args.since
                 until_date = getattr(cli_args, "until", None)
                 reply_count = cli_args.replies
+                max_depth = getattr(cli_args, "depth", 1)
                 query = screen_name
 
                 posts, comments = self.fetch_report(
-                    screen_name, since_date, until_date, reply_count
+                    screen_name, since_date, until_date, reply_count, max_depth
                 )
 
                 # 输出两个 CSV
@@ -893,7 +925,9 @@ class SeleniumScraper:
                 comment_path = None
                 if comments:
                     comment_path = self._make_output_path(query, "comments")
-                    self.export_csv(comments, comment_path, extra_fields=["parent_tweet_id", "parent_author"])
+                    extra = ["parent_tweet_id", "parent_tweet_author",
+                             "parent_comment_id", "depth"]
+                    self.export_csv(comments, comment_path, extra_fields=extra)
 
                 print_summary(
                     mode=mode,
@@ -903,7 +937,7 @@ class SeleniumScraper:
                     output_path=f"{post_path}\n{' '*12}+ {comment_path}",
                     skipped=self.skipped_count,
                 )
-                return  # report 自己处理了输出，直接返回
+                return
 
         except KeyboardInterrupt:
             print("\n⚠ 用户中断操作")
@@ -916,7 +950,6 @@ class SeleniumScraper:
             print(f"\n✗ 抓取异常: {e}")
             traceback.print_exc()
         finally:
-            # 确保浏览器关闭
             if self.driver:
                 self.driver.quit()
                 print("浏览器已关闭")
@@ -965,6 +998,9 @@ def generate_config(output_path="config.json"):
             "page_load_timeout": 30,
             "scroll_pause_seconds": 3,
         },
+        "filter": {
+            "xinjiang_only": True,
+        },
     }
 
     if os.path.exists(output_path):
@@ -999,14 +1035,13 @@ def main():
   python3 x_scraper.py config                                 生成配置文件
   python3 x_scraper.py tweet 1234567890                       获取单条推文
   python3 x_scraper.py timeline elonmusk --count 50           获取用户时间线
-  python3 x_scraper.py timeline elonmusk --since 2026-07-01   时间段过滤
+  python3 x_scraper.py timeline elonmusk --since 2025-01-01   时间段过滤
   python3 x_scraper.py search "python" --count 20             搜索推文
   python3 x_scraper.py replies 1234567890 --count 30          获取推文回复
-  python3 x_scraper.py report elonmusk --since 2026-07-01 --replies 5  一站式报告
+  python3 x_scraper.py report elonmusk --since 2025-01-01 --replies 20 --depth 1  一站式报告
         """,
     )
 
-    # 全局参数
     parser.add_argument(
         "-c", "--config",
         default="config.json",
@@ -1018,7 +1053,6 @@ def main():
         help="输出详细调试信息",
     )
 
-    # 子命令
     subparsers = parser.add_subparsers(
         dest="mode",
         title="子命令",
@@ -1026,20 +1060,20 @@ def main():
         help="可用的抓取模式",
     )
 
-    # ---- tweet 子命令 ----
+    # ---- tweet ----
     tweet_parser = subparsers.add_parser("tweet", help="根据推文 ID 获取单条推文详情")
-    tweet_parser.add_argument("tweet_id", help="推文 ID（数字字符串，从 URL 中获取）")
-    tweet_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
+    tweet_parser.add_argument("tweet_id", help="推文 ID")
+    tweet_parser.add_argument("-o", "--output", help="输出文件路径")
 
-    # ---- timeline 子命令 ----
+    # ---- timeline ----
     timeline_parser = subparsers.add_parser("timeline", help="获取指定用户的最新推文")
-    timeline_parser.add_argument("screen_name", help="用户 screen name（@后面的部分，如 elonmusk）")
+    timeline_parser.add_argument("screen_name", help="用户 screen name")
     timeline_parser.add_argument("--count", type=int, default=20, help="获取推文数量 (默认: 20)")
     timeline_parser.add_argument("--since", help="起始日期 YYYY-MM-DD")
     timeline_parser.add_argument("--until", help="截止日期 YYYY-MM-DD")
-    timeline_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
+    timeline_parser.add_argument("-o", "--output", help="输出文件路径")
 
-    # ---- search 子命令 ----
+    # ---- search ----
     search_parser = subparsers.add_parser("search", help="根据关键词搜索推文")
     search_parser.add_argument("query", help="搜索关键词")
     search_parser.add_argument("--count", type=int, default=20, help="获取推文数量 (默认: 20)")
@@ -1047,30 +1081,31 @@ def main():
         "--product", choices=["Top", "Latest"], default="Latest",
         help="搜索类型 (默认: Latest)",
     )
-    search_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
+    search_parser.add_argument("-o", "--output", help="输出文件路径")
 
-    # ---- replies 子命令 ----
+    # ---- replies ----
     replies_parser = subparsers.add_parser("replies", help="获取指定推文的回复列表（含原帖）")
     replies_parser.add_argument("tweet_id", help="推文 ID")
     replies_parser.add_argument("--count", type=int, default=20, help="获取回复数量 (默认: 20)")
-    replies_parser.add_argument("-o", "--output", help="输出文件路径（默认自动生成）")
+    replies_parser.add_argument("-o", "--output", help="输出文件路径")
 
-    # ---- config 子命令 ----
+    # ---- config ----
     config_parser = subparsers.add_parser("config", help="生成模板配置文件")
     config_parser.add_argument(
         "-o", "--output", default="config.json",
         help="配置文件输出路径 (默认: config.json)",
     )
 
-    # ---- report 子命令 ----
-    report_parser = subparsers.add_parser("report", help="一站式报告：用户时间线 + 热评")
+    # ---- report ----
+    report_parser = subparsers.add_parser("report", help="一站式报告：用户时间线 + 评论 + 子评论")
     report_parser.add_argument("screen_name", help="用户 screen name（@后面部分）")
     report_parser.add_argument("--since", required=True, help="起始日期 YYYY-MM-DD（必填）")
     report_parser.add_argument("--until", help="截止日期 YYYY-MM-DD（可选）")
-    report_parser.add_argument("--replies", type=int, default=5, help="每条推文取多少热评 (默认: 5)")
-    report_parser.add_argument("-o", "--output", help="推文输出文件路径（默认自动生成）")
+    report_parser.add_argument("--replies", type=int, default=20, help="每条推文取多少一级评论 (默认: 20)")
+    report_parser.add_argument("--depth", type=int, default=1,
+                               help="子评论递归深度: 0=仅一级评论, 1=含一级子评论 (默认: 1)")
+    report_parser.add_argument("-o", "--output", help="推文输出文件路径")
 
-    # 解析
     args = parser.parse_args()
 
     if not args.mode:
@@ -1085,10 +1120,7 @@ def main():
 
     print_banner()
 
-    # 加载配置
     config = get_config(args.config)
-
-    # 创建爬虫实例并执行
     scraper = SeleniumScraper(config)
     scraper.start(args)
 
