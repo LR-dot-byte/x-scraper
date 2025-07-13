@@ -43,13 +43,27 @@ except ImportError:
 #  新疆相关关键词（用于过滤帖子）
 # ============================================================
 XINJIANG_KEYWORDS = [
+    # === 核心身份词 ===
     # 中文
     "新疆", "维吾尔", "东突", "东突厥",
     # 英文
     "Xinjiang", "Uyghur", "Uighur", "Uygur", "Uigur",
     "East Turkestan", "East Turkistan",
-    # 其他
+    # 其他语言
     "ウイグル", "อุยกูร์",
+
+    # === 暴行指控词（高频） ===
+    "genocide", "forced labor", "forced labour",
+    "atrocity", "crimes against humanity",
+    "concentration camp", "re-education camp",
+    "persecution", "oppression", "repression",
+    "deportation", "repatriation", "extradition",
+    "inhumane detention",
+
+    # === 组织/法案词（标记知情代理人身份） ===
+    "UHRP", "Uyghur Human Rights Project",
+    "Uyghur Congress", "UFLPA",
+    "Magnitsky", "CECC",
 ]
 
 # ============================================================
