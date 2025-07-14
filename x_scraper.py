@@ -555,10 +555,12 @@ class SeleniumScraper:
         collected = []
         last_unique = 0
         stale_count = 0
-        # 时间线上遇到的第一条新推文可能是置顶推文（顺序与实际发布时间无关）。
-        # 置顶徽章检测存在渲染时序问题，不完全可靠，因此额外加一道保险：
-        # 第一条新推文即使早于 since_date，也只跳过、不据此触发提前停止。
-        is_first_new_tweet = True
+        # 时间线最上方可能混有置顶推文（顺序与实际发布时间无关），且置顶推文
+        # 前面还可能夹着不匹配关键词而被跳过的正常推文，因此置顶徽章检测不完全
+        # 可靠时，仅保护"第一条"不够。这里保守地保护前 N_PINNED_GUARD 条新推文，
+        # 即使日期早于 since_date 也只跳过、不据此触发提前停止滚动。
+        N_PINNED_GUARD = 3
+        new_tweet_index = 0
 
         for scroll_num in range(max_scrolls):
             batch = self._extract_tweets_batch()
@@ -577,8 +579,8 @@ class SeleniumScraper:
                 # 判断失真、提前误判为停滞而中断滚动
                 self.tweet_ids.add(data["id"])
                 new_seen_this_round += 1
-                is_first_this_tweet = is_first_new_tweet
-                is_first_new_tweet = False
+                is_guarded = new_tweet_index < N_PINNED_GUARD
+                new_tweet_index += 1
 
                 # 关键词过滤
                 if keyword_filter:
@@ -590,7 +592,7 @@ class SeleniumScraper:
                 # 时间过滤
                 created = data.get("created_at", "")
                 if since_date and created and created[:10] < since_date:
-                    if is_first_this_tweet:
+                    if is_guarded:
                         # 疑似置顶推文导致的时间乱序，跳过但不中断滚动
                         continue
                     print(f"  推文时间 {created[:10]} 早于 {since_date}，停止滚动")
