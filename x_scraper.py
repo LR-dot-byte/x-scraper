@@ -198,6 +198,13 @@ class SeleniumScraper:
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
     articles.forEach((article, idx) => {
       try {
+        // --- 跳过置顶推文（Pinned Tweet 固定显示在时间线顶部，会破坏按时间倒序的假设，
+        //     导致 since_date 早停逻辑误判为"已翻到最早"而提前终止）---
+        const pinContext = article.querySelector('[data-testid="socialContext"]');
+        if (pinContext && /pinned|置顶/i.test(pinContext.innerText || '')) {
+          return;
+        }
+
         // --- 推文链接 & ID ---
         let tweetId = '', tweetUrl = '';
         const statusLinks = article.querySelectorAll('a[href*="/status/"]');
@@ -551,6 +558,7 @@ class SeleniumScraper:
 
         for scroll_num in range(max_scrolls):
             batch = self._extract_tweets_batch()
+            new_seen_this_round = 0
 
             for data in batch:
                 if len(collected) >= target_count:
@@ -559,6 +567,12 @@ class SeleniumScraper:
                     continue
                 if data["id"] in self.tweet_ids:
                     continue
+
+                # 标记为已扫描（无论是否匹配关键词），避免同一条推文
+                # 在后续每次滚动中被反复重新扫描，导致"是否有新内容"的
+                # 判断失真、提前误判为停滞而中断滚动
+                self.tweet_ids.add(data["id"])
+                new_seen_this_round += 1
 
                 # 关键词过滤
                 if keyword_filter:
@@ -576,7 +590,6 @@ class SeleniumScraper:
                 if until_date and created and created[:10] > until_date:
                     continue
 
-                self.tweet_ids.add(data["id"])
                 collected.append(data)
 
             current_unique = len(collected)
@@ -589,14 +602,17 @@ class SeleniumScraper:
                 self._stop_early = False
                 break
 
-            if current_unique == last_unique:
+            # 停滞判断依据"本轮是否扫描到任何新推文"（无论匹配与否），
+            # 而不是只看匹配到的数量，避免因连续出现不相关推文而提前停止
+            if new_seen_this_round == 0:
                 stale_count += 1
                 if stale_count >= 5:
                     print(f"  连续 {stale_count} 次无新推文，停止滚动")
                     break
             else:
                 stale_count = 0
-                print(f"  已收集 {current_unique} 条推文 (目标 {target_count})")
+                print(f"  已收集 {current_unique} 条推文 (目标 {target_count}，"
+                      f"本轮新扫描 {new_seen_this_round} 条)")
 
             last_unique = current_unique
 
