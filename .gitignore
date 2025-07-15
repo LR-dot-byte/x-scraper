@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+x_output/
+x_cookies*.json
+config.json
+.DS_Store
