@@ -1,12 +1,22 @@
-# X (Twitter) 帖子爬虫工具
+# X (Twitter) 帖子抓取工具
 
-基于 Selenium + Chrome，模拟真实浏览器操作，抓取 X (Twitter) 推文详情、用户时间线、关键词搜索、评论回复。输出 CSV 格式（UTF-8 BOM）。
+基于 Selenium + Chrome，抓取 X (Twitter) 推文详情、用户时间线、关键词搜索、评论和子评论，输出 UTF-8 BOM CSV。
+
+当前版本重点改进了：
+
+- 按目标推文 ID 和回复对象精确归属数据；
+- 使用北京时间过滤日期，并在关键词过滤前判断早停；
+- 小步滚动和显式等待，减少漏抓和无效等待；
+- 实体词匹配、作者校验与中英文互动数据解析；
+- Cookie 文件权限保护、CSV 公式注入防护和输入校验。
 
 ## 安装
 
 ```bash
 pip install -r requirements.txt
 ```
+
+需要本机已安装 Chrome。Selenium 4.6+ 会通过 Selenium Manager 自动管理匹配的驱动。
 
 ## 快速开始
 
@@ -22,3 +32,15 @@ python3 x_scraper.py report <用户> --since 2025-01-01 --replies 20 --depth 1  
 ## 配置
 
 编辑 `config.json`，设置 Cookie 文件路径。Cookie 从浏览器开发者工具导出。
+
+建议先生成模板：
+
+```bash
+python3 x_scraper.py config
+```
+
+Cookie 等同于登录凭据：不要提交到 Git，也不要分享给他人。程序在 POSIX 系统上会尝试将 Cookie 文件权限收紧为 `600`。
+
+## 准确度说明
+
+评论模式只保留页面上能明确证明回复目标作者的记录。当 X 页面未提供可验证的回复标记时，程序会倾向少抓，避免将推荐帖误判为评论。

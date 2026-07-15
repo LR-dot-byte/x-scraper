@@ -22,15 +22,15 @@ import re
 import sys
 import time
 import traceback
+import unicodedata
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote_plus, urlparse
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from webdriver_manager.chrome import ChromeDriverManager
 
 try:
     import undetected_chromedriver as uc
@@ -42,27 +42,23 @@ except ImportError:
 # ============================================================
 #  新疆相关关键词（用于过滤帖子）
 # ============================================================
-XINJIANG_KEYWORDS = [
-    # === 核心身份词 ===
-    # 中文
+XINJIANG_ANCHOR_KEYWORDS = [
+    # 直接指向新疆/维吾尔议题：命中任意一个即可保留
     "新疆", "维吾尔", "东突", "东突厥",
-    # 英文
     "Xinjiang", "Uyghur", "Uighur", "Uygur", "Uigur",
     "East Turkestan", "East Turkistan",
-    # 其他语言
     "ウイグル", "อุยกูร์",
+    "UHRP", "Uyghur Human Rights Project", "Uyghur Congress", "UFLPA",
+]
 
-    # === 暴行指控词（高频） ===
+XINJIANG_CONTEXT_KEYWORDS = [
+    # 这些词单独出现不足以证明与新疆相关，只用于辅助分类/调试
     "genocide", "forced labor", "forced labour",
     "atrocity", "crimes against humanity",
     "concentration camp", "re-education camp",
     "persecution", "oppression", "repression",
     "deportation", "repatriation", "extradition",
     "inhumane detention",
-
-    # === 组织/法案词（标记知情代理人身份） ===
-    "UHRP", "Uyghur Human Rights Project",
-    "Uyghur Congress", "UFLPA",
     "Magnitsky", "CECC",
 ]
 
@@ -80,6 +76,8 @@ def get_config(config_path="config.json"):
     try:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
+        # 使相对路径始终相对于 config.json，而不是当前工作目录。
+        config["_config_dir"] = os.path.dirname(os.path.realpath(config_path))
         return config
     except json.JSONDecodeError as e:
         print(f"✗ 配置文件格式不正确: {e}")
@@ -109,15 +107,30 @@ def print_summary(mode, query, requested, actual, output_path, skipped=0):
     print("-" * 50)
 
 
+def _contains_keyword(text, keyword):
+    """匹配关键词。英文/数字词使用词边界，避免在更长单词中误命中。"""
+    escaped = re.escape(unicodedata.normalize("NFKC", keyword).casefold())
+    if re.search(r"[a-z0-9]", keyword, flags=re.I):
+        return re.search(rf"(?<![a-z0-9_]){escaped}(?![a-z0-9_])", text) is not None
+    return escaped in text
+
+
 def matches_xinjiang(text):
-    """检查文本是否匹配新疆相关关键词（大小写不敏感）。"""
+    """仅在命中新疆实体词或专属组织/法案词时返回 True。"""
     if not text:
         return False
-    text_lower = text.lower()
-    for kw in XINJIANG_KEYWORDS:
-        if kw.lower() in text_lower:
-            return True
-    return False
+    normalized = unicodedata.normalize("NFKC", str(text)).casefold()
+    return any(_contains_keyword(normalized, kw) for kw in XINJIANG_ANCHOR_KEYWORDS)
+
+
+def sanitize_csv_value(value):
+    """防止外部文本被 Excel/LibreOffice 解释为公式。"""
+    if not isinstance(value, str):
+        return value
+    value = value.replace("\x00", "")
+    if value.startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+        return "'" + value
+    return value
 
 
 # ============================================================
@@ -135,10 +148,10 @@ class RateLimiter:
 
     def __init__(self, config):
         cfg = config.get("rate_limit", {})
-        self.min_interval = cfg.get("min_interval_seconds", 8)
-        self.max_interval = cfg.get("max_interval_seconds", 15)
-        self.long_pause = cfg.get("long_pause_seconds", 90)
-        self.batch_size = cfg.get("pages_per_long_pause", 10)
+        self.min_interval = cfg.get("min_interval_seconds", 3)
+        self.max_interval = cfg.get("max_interval_seconds", 6)
+        self.long_pause = cfg.get("long_pause_seconds", 60)
+        self.batch_size = cfg.get("pages_per_long_pause", 20)
         self.cooldown_seconds = cfg.get("cooldown_seconds", 300)
         self.max_retries = cfg.get("max_retries", 3)
 
@@ -195,6 +208,17 @@ class SeleniumScraper:
     # ---- JS 脚本：在浏览器端原子提取所有可见推文的结构化数据 ----
     _EXTRACT_TWEETS_JS = r"""
     const results = [];
+    const parseCompactNumber = (raw) => {
+      if (!raw) return 0;
+      const cleaned = String(raw).replace(/,/g, '').trim();
+      const m = cleaned.match(/([\d.]+)\s*([KMB万亿]?)/i);
+      if (!m) return 0;
+      let value = Number(m[1]);
+      const unit = (m[2] || '').toUpperCase();
+      const factors = {K: 1e3, M: 1e6, B: 1e9, '万': 1e4, '亿': 1e8};
+      if (factors[unit]) value *= factors[unit];
+      return Number.isFinite(value) ? Math.round(value) : 0;
+    };
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
     articles.forEach((article, idx) => {
       try {
@@ -270,20 +294,20 @@ class SeleniumScraper:
 
         if (!authorName && authorHandle) authorName = authorHandle;
 
-        // --- 互动数据（从 role="group" aria-label 解析）---
+        // --- 互动数据（兼容英文/中文 aria-label 和 K/M/万缩写）---
         let likeCount = 0, retweetCount = 0, replyCount = 0, viewCount = 0;
         const groupEl = article.querySelector('div[role="group"]');
         if (groupEl) {
           const aria = groupEl.getAttribute('aria-label') || '';
           let m;
-          m = aria.match(/([\d,]+)\s*repl/i); if (m) replyCount = parseInt(m[1].replace(/,/g, ''));
-          m = aria.match(/([\d,]+)\s*repo/i); if (m) retweetCount = parseInt(m[1].replace(/,/g, ''));
-          m = aria.match(/([\d,]+)\s*lik/i); if (m) likeCount = parseInt(m[1].replace(/,/g, ''));
-          m = aria.match(/([\d,]+)\s*vie/i); if (m) viewCount = parseInt(m[1].replace(/,/g, ''));
+          m = aria.match(/([\d,.]+\s*[KMB万亿]?)\s*(?:条\s*)?(?:repl|回复)/i); if (m) replyCount = parseCompactNumber(m[1]);
+          m = aria.match(/([\d,.]+\s*[KMB万亿]?)\s*(?:次\s*)?(?:repo|retweet|转发)/i); if (m) retweetCount = parseCompactNumber(m[1]);
+          m = aria.match(/([\d,.]+\s*[KMB万亿]?)\s*(?:个\s*)?(?:lik|喜欢|赞)/i); if (m) likeCount = parseCompactNumber(m[1]);
+          m = aria.match(/([\d,.]+\s*[KMB万亿]?)\s*(?:次\s*)?(?:vie|查看|浏览)/i); if (m) viewCount = parseCompactNumber(m[1]);
         }
 
         // --- 话题标签 ---
-        const hashtags = (text.match(/#(\w+)/g) || []).map(h => h.replace('#', ''));
+        const hashtags = (text.match(/#[\p{L}\p{N}_]+/gu) || []).map(h => h.replace('#', ''));
 
         // --- 外部链接 ---
         const urlElements = article.querySelectorAll('a[href*="http"]');
@@ -296,15 +320,20 @@ class SeleniumScraper:
         }
 
         // --- 媒体 ---
-        const mediaCount = article.querySelectorAll('[data-testid="tweetPhoto"]').length;
+        const mediaCount = article.querySelectorAll(
+          '[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video'
+        ).length;
 
         // --- 是否回复 / 回复对象 ---
         const socialContext = article.querySelector('[data-testid="socialContext"]');
-        const isReply = text.includes('Replying to') || !!socialContext;
+        const fullText = article.innerText || '';
+        const textPosition = text ? fullText.indexOf(text) : -1;
+        const headerText = textPosition >= 0 ? fullText.slice(0, textPosition) : fullText.slice(0, 300);
+        const replyLabel = /(Replying to|正在回复|回复)[\s\S]{0,160}/i.exec(headerText);
+        const replyToHandles = replyLabel ? (replyLabel[0].match(/@[A-Za-z0-9_]{1,15}/g) || []) : [];
+        const isReply = replyToHandles.length > 0;
         let replyTo = '';
-        if (socialContext) {
-          replyTo = socialContext.innerText.trim();
-        }
+        if (replyLabel) replyTo = replyLabel[0].trim().split('\n').slice(0, 4).join(' ');
 
         // --- 推文深度（0=主帖, 1=一级评论, 2=二级评论...）---
         let depth = 0;
@@ -325,6 +354,7 @@ class SeleniumScraper:
 
         results.push({
           id: tweetId,
+          dom_index: idx,
           text: text.replace(/\n/g, ' '),
           created_at: createdAt,
           author_name: authorName,
@@ -339,6 +369,7 @@ class SeleniumScraper:
           media_count: mediaCount,
           is_reply: isReply,
           reply_to: replyTo,
+          reply_to_handles: replyToHandles.map(h => h.slice(1)).join(','),
           tweet_url: tweetUrl,
         });
       } catch(e) {}
@@ -365,6 +396,7 @@ class SeleniumScraper:
         self.headless = self.selenium_cfg.get("headless", False)
         self.page_timeout = self.selenium_cfg.get("page_load_timeout", 60)
         self.scroll_pause = self.selenium_cfg.get("scroll_pause_seconds", 3)
+        self.scroll_pause = max(0.3, min(float(self.scroll_pause), 5.0))
 
         # Xinjiang 关键词过滤
         self.filter_xinjiang = config.get("filter", {}).get("xinjiang_only", True)
@@ -384,6 +416,49 @@ class SeleniumScraper:
             print("✗ 配置文件缺少 'auth' 字段")
             sys.exit(1)
 
+        rate_cfg = config.get("rate_limit", {})
+        min_interval = rate_cfg.get("min_interval_seconds", 2)
+        max_interval = rate_cfg.get("max_interval_seconds", 5)
+        if min_interval < 0 or max_interval < min_interval:
+            raise ValueError("rate_limit 配置无效：需要 0 <= min_interval <= max_interval")
+
+    @staticmethod
+    def _validate_tweet_id(tweet_id):
+        value = str(tweet_id).strip()
+        if not re.fullmatch(r"\d{5,25}", value):
+            raise ValueError(f"无效的推文 ID: {tweet_id!r}")
+        return value
+
+    @staticmethod
+    def _validate_screen_name(screen_name):
+        value = str(screen_name).strip().lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,15}", value):
+            raise ValueError(f"无效的 X 用户名: {screen_name!r}")
+        return value
+
+    @staticmethod
+    def _validate_date(value, name):
+        if not value:
+            return None
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} 必须是 YYYY-MM-DD 格式") from exc
+        return value
+
+    @staticmethod
+    def _cst_date_from_iso(iso_value):
+        """将 X 的 UTC ISO 8601 时间转为中国标准时间日期。"""
+        if not iso_value:
+            return ""
+        try:
+            dt = datetime.fromisoformat(str(iso_value).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone(timedelta(hours=8))).date().isoformat()
+        except (TypeError, ValueError):
+            return ""
+
     # ----- WebDriver 初始化 -----
 
     def _init_driver(self):
@@ -393,22 +468,19 @@ class SeleniumScraper:
         selenium_cfg = self.config.get("selenium", {})
         profile_dir = selenium_cfg.get("profile_dir", "")
         use_profile = selenium_cfg.get("use_existing_profile", False)
-        use_uc = selenium_cfg.get("use_undetected", True)
+        use_uc = selenium_cfg.get("use_undetected", False)
 
         if use_profile and profile_dir and os.path.isdir(profile_dir):
             options.add_argument(f"--user-data-dir={profile_dir}")
             print(f"✓ 使用已有 Chrome Profile: {profile_dir}")
         else:
-            options.add_argument(
-                "--user-agent=Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-            )
-            options.add_argument("--window-size=390,844")
+            # 使用真实 Chrome UA；伪装 iPhone Safari 会造成 UA/渲染引擎特征矛盾，
+            # 并且移动窄屏每屏加载的推文更少。
+            options.add_argument("--window-size=1280,1000")
 
         if self.headless:
             options.add_argument("--headless=new")
 
-        options.add_argument("--no-sandbox")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-notifications")
@@ -417,16 +489,24 @@ class SeleniumScraper:
             "credentials_enable_service": False,
         })
 
-        # 使用 undetected-chromedriver（绕过 X 反爬检测）
+        # 如果用户明确开启，才使用 undetected-chromedriver。
         if use_uc and HAS_UC and not use_profile:
             print("✓ 使用 undetected-chromedriver（反检测模式）")
             self.driver = uc.Chrome(options=options)
         else:
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=options)
+            # Selenium 4 自带的 Selenium Manager 会复用本地驱动，避免每次调用
+            # webdriver-manager 检查/下载驱动。
+            self.driver = webdriver.Chrome(options=options)
 
         self.driver.set_page_load_timeout(self.page_timeout)
-        self.driver.implicitly_wait(5)
+        # 只使用显式等待，避免隐式等待与 WebDriverWait 叠加。
+        self.driver.implicitly_wait(0)
+
+    def _wait_for_page_ready(self, timeout=12):
+        """等待 DOM 可交互，替代固定时长 sleep。"""
+        WebDriverWait(self.driver, timeout).until(
+            lambda d: d.execute_script("return document.readyState") in ("interactive", "complete")
+        )
 
     # ----- 认证 -----
 
@@ -448,7 +528,7 @@ class SeleniumScraper:
                     if attempt < 2:
                         print(f"  ⚠ 页面加载超时，重试 ({attempt+1}/3)...")
                         time.sleep(5)
-            time.sleep(4)
+            self._wait_for_page_ready()
 
             page_source = self.driver.page_source
             if "Something went wrong" in page_source:
@@ -462,11 +542,21 @@ class SeleniumScraper:
         # 否则使用 Cookie 注入方式
         auth = self.config.get("auth", {})
         cookies_file = auth.get("cookies_file", "")
+        if cookies_file and not os.path.isabs(cookies_file):
+            cookies_file = os.path.join(self.config.get("_config_dir", os.getcwd()), cookies_file)
         if not cookies_file or not os.path.isfile(cookies_file):
             print("✗ Cookie 文件不存在或未配置")
             print(f"  请在 config.json 的 auth.cookies_file 中指定 Cookie 文件路径")
             self.driver.quit()
             sys.exit(1)
+
+        # Cookie 等同于登录凭据，POSIX 系统上自动收紧为仅当前用户可读写。
+        try:
+            if os.name == "posix" and (os.stat(cookies_file).st_mode & 0o077):
+                os.chmod(cookies_file, 0o600)
+                print("  ✓ 已将 Cookie 文件权限收紧为 600")
+        except OSError as e:
+            print(f"  ⚠ 无法收紧 Cookie 文件权限: {e}")
 
         print(f"正在加载 Cookie: {cookies_file}")
         with open(cookies_file, "r", encoding="utf-8") as f:
@@ -484,7 +574,7 @@ class SeleniumScraper:
                     time.sleep(5)
                 else:
                     raise
-        time.sleep(3)
+        self._wait_for_page_ready()
 
         # 注入 Cookie
         if isinstance(cookies, dict):
@@ -512,7 +602,7 @@ class SeleniumScraper:
                     time.sleep(5)
                 else:
                     print("  ⚠ 页面加载较慢，继续尝试...")
-        time.sleep(3)
+        self._wait_for_page_ready()
 
         page_source = self.driver.page_source
         if "Something went wrong" in page_source:
@@ -538,7 +628,8 @@ class SeleniumScraper:
     # ----- 滚动加载 -----
 
     def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
-                        since_date=None, until_date=None, keyword_filter=False):
+                        since_date=None, until_date=None, keyword_filter=False,
+                        expected_author=None):
         """滚动页面加载更多推文。
 
         Args:
@@ -552,8 +643,16 @@ class SeleniumScraper:
         Returns:
             推文数据 dict 列表（已去重）
         """
+        if target_count <= 0:
+            return []
+
+        since_date = self._validate_date(since_date, "since_date")
+        until_date = self._validate_date(until_date, "until_date")
+        if since_date and until_date and since_date > until_date:
+            raise ValueError("since_date 不能晚于 until_date")
+
         collected = []
-        last_unique = 0
+        local_seen_ids = set()
         stale_count = 0
         # 时间线最上方可能混有置顶推文（顺序与实际发布时间无关），且置顶推文
         # 前面还可能夹着不匹配关键词而被跳过的正常推文，因此置顶徽章检测不完全
@@ -561,9 +660,13 @@ class SeleniumScraper:
         # 即使日期早于 since_date 也只跳过、不据此触发提前停止滚动。
         N_PINNED_GUARD = 3
         new_tweet_index = 0
+        old_date_streak = 0
 
         for scroll_num in range(max_scrolls):
-            batch = self._extract_tweets_batch()
+            batch = sorted(
+                self._extract_tweets_batch(),
+                key=lambda item: item.get("dom_index", 0) if item else 0,
+            )
             new_seen_this_round = 0
 
             for data in batch:
@@ -571,37 +674,52 @@ class SeleniumScraper:
                     break
                 if not data or not data.get("id"):
                     continue
-                if data["id"] in self.tweet_ids:
+                if data["id"] in local_seen_ids:
                     continue
 
                 # 标记为已扫描（无论是否匹配关键词），避免同一条推文
                 # 在后续每次滚动中被反复重新扫描，导致"是否有新内容"的
                 # 判断失真、提前误判为停滞而中断滚动
-                self.tweet_ids.add(data["id"])
+                local_seen_ids.add(data["id"])
                 new_seen_this_round += 1
                 is_guarded = new_tweet_index < N_PINNED_GUARD
                 new_tweet_index += 1
 
-                # 关键词过滤
-                if keyword_filter:
-                    text = data.get("text", "")
-                    if not matches_xinjiang(text):
-                        self.skipped_count += 1
-                        continue
-
-                # 时间过滤
+                # 先做时间过滤。否则旧的不相关推文会在关键词处 continue，
+                # 程序就无法及时感知已经翻过 since_date。
                 created = data.get("created_at", "")
-                if since_date and created and created[:10] < since_date:
+                created_date = self._cst_date_from_iso(created)
+                if (since_date or until_date) and not created_date:
+                    self.skipped_count += 1
+                    continue
+                if since_date and created_date < since_date:
                     if is_guarded:
                         # 疑似置顶推文导致的时间乱序，跳过但不中断滚动
                         continue
-                    print(f"  推文时间 {created[:10]} 早于 {since_date}，停止滚动")
-                    self._stop_early = True
-                    break
-                if until_date and created and created[:10] > until_date:
+                    old_date_streak += 1
+                    # 两条连续旧推文才早停，容忍一条算法插入/时间乱序。
+                    if old_date_streak >= 2:
+                        print(f"  连续推文时间早于 {since_date}，停止滚动")
+                        self._stop_early = True
+                        break
+                    continue
+                old_date_streak = 0
+                if until_date and created_date > until_date:
+                    continue
+
+                if expected_author:
+                    handle = data.get("author_handle", "")
+                    if handle.casefold() != expected_author.casefold():
+                        self.skipped_count += 1
+                        continue
+
+                # 关键词在时间判断之后处理。
+                if keyword_filter and not matches_xinjiang(data.get("text", "")):
+                    self.skipped_count += 1
                     continue
 
                 collected.append(data)
+                self.tweet_ids.add(data["id"])
 
             current_unique = len(collected)
 
@@ -625,22 +743,40 @@ class SeleniumScraper:
                 print(f"  已收集 {current_unique} 条推文 (目标 {target_count}，"
                       f"本轮新扫描 {new_seen_this_round} 条)")
 
-            last_unique = current_unique
-
-            self.rate_limiter.wait(label=f"{label}滚动{scroll_num+1}")
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            # 滚动本身不是新的 HTTP 导航，不再套用 8~15 秒的导航限流。
+            # 按视口小步滚动，避免直接跳到 document.body.scrollHeight
+            # 跳过 X 虚拟列表中尚未进入 DOM 的推文。
+            multiplier = 1.5 if stale_count >= 2 else 0.85
+            self.driver.execute_script(
+                "window.scrollBy(0, Math.max(600, window.innerHeight * arguments[0]));",
+                multiplier,
+            )
             time.sleep(self.scroll_pause)
-            self.rate_limiter.batch_pause()
 
         return collected
 
     # ----- 页面导航（带重试） -----
 
-    def _navigate(self, url, label="页面", max_retries=3):
+    def _navigate(self, url, label="页面", max_retries=None):
         """安全导航到指定 URL，带超时重试。"""
+        if max_retries is None:
+            max_retries = max(1, int(self.rate_limiter.max_retries))
         for attempt in range(max_retries):
             try:
                 self.driver.get(url)
+                source = (self.driver.page_source or "").casefold()
+                limited = any(marker in source for marker in (
+                    "rate limit exceeded", "too many requests", "请求过于频繁",
+                ))
+                if limited:
+                    if attempt < max_retries - 1:
+                        delay = min(60, 10 * (2 ** attempt))
+                        print(f"  ⚠ [{label}] 检测到限流，{delay}s 后重试...")
+                        time.sleep(delay)
+                        continue
+                    print(f"  ✗ [{label}] 平台仍在限流，放弃当前页面")
+                    return False
+                self.rate_limiter.batch_pause()
                 return True
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -655,12 +791,14 @@ class SeleniumScraper:
 
     def fetch_tweet(self, tweet_id):
         """获取单条推文详情。"""
+        tweet_id = self._validate_tweet_id(tweet_id)
         url = f"https://x.com/i/status/{tweet_id}"
         print(f"正在访问: {url}")
 
         self.rate_limiter.wait(label="获取推文")
-        self._navigate(url, label="推文")
-        time.sleep(3)
+        if not self._navigate(url, label="推文"):
+            return []
+        self._wait_for_page_ready()
 
         try:
             WebDriverWait(self.driver, 10).until(
@@ -675,7 +813,10 @@ class SeleniumScraper:
             print(f"  ✗ 未找到推文元素")
             return []
 
-        tweet_data = batch[0]
+        tweet_data = next((item for item in batch if item.get("id") == tweet_id), None)
+        if not tweet_data:
+            print(f"  ✗ 页面中未找到目标推文 ID {tweet_id}")
+            return []
         if tweet_data:
             self.tweet_ids.add(tweet_data["id"])
             self.got_count += 1
@@ -688,7 +829,13 @@ class SeleniumScraper:
     def fetch_user_timeline(self, screen_name, count=20, since_date=None, until_date=None,
                             keyword_filter=False):
         """获取指定用户的最新推文。"""
-        screen_name = screen_name.lstrip("@")
+        screen_name = self._validate_screen_name(screen_name)
+        since_date = self._validate_date(since_date, "--since")
+        until_date = self._validate_date(until_date, "--until")
+        if since_date and until_date and since_date > until_date:
+            raise ValueError("--since 不能晚于 --until")
+        if count <= 0:
+            raise ValueError("--count 必须大于 0")
         url = f"https://x.com/{screen_name}"
         print(f"正在访问用户主页: @{screen_name}")
         if since_date or until_date:
@@ -698,13 +845,17 @@ class SeleniumScraper:
         print(f"目标: {count} 条推文")
 
         self.rate_limiter.wait(label="访问主页")
-        self._navigate(url, label="用户主页")
-        time.sleep(3)
+        if not self._navigate(url, label="用户主页"):
+            return []
+        self._wait_for_page_ready()
+        # Profile 统计位于页面顶部，滚动后会被 X 的虚拟 DOM 移除。
+        self._last_profile_stats = self._get_profile_stats(screen_name)
 
         tweets = self._scroll_to_load(
             count, label=f"@{screen_name}",
             since_date=since_date, until_date=until_date,
             keyword_filter=keyword_filter,
+            expected_author=screen_name,
         )
 
         self.got_count += len(tweets)
@@ -715,15 +866,16 @@ class SeleniumScraper:
 
     def fetch_search_tweets(self, query, count=20, product="Latest"):
         """根据关键词搜索推文。"""
-        from urllib.parse import quote_plus
-
+        if count <= 0:
+            raise ValueError("--count 必须大于 0")
         encoded_query = quote_plus(query)
         url = f"https://x.com/search?q={encoded_query}&f={'live' if product == 'Latest' else 'top'}"
         print(f"正在搜索: \"{query}\" (类型: {product}, 目标: {count} 条)")
 
         self.rate_limiter.wait(label="搜索")
-        self._navigate(url, label="搜索")
-        time.sleep(3)
+        if not self._navigate(url, label="搜索"):
+            return []
+        self._wait_for_page_ready()
 
         tweets = self._scroll_to_load(count, label="搜索")
         self.got_count += len(tweets)
@@ -732,7 +884,21 @@ class SeleniumScraper:
 
     # ----- 评论 & 子评论抓取 -----
 
-    def _fetch_comments_for_tweet(self, tweet_url, max_comments=20, max_depth=1):
+    @staticmethod
+    def _is_direct_reply(candidate, parent_author):
+        """只在页面明确标注候选帖回复了目标作者时认定归属。"""
+        expected = str(parent_author or "").strip().lstrip("@").casefold()
+        if not expected:
+            return False
+        reply_handles = {
+            handle.strip().lstrip("@").casefold()
+            for handle in candidate.get("reply_to_handles", "").split(",")
+            if handle.strip()
+        }
+        return expected in reply_handles
+
+    def _fetch_comments_for_tweet(self, tweet_url, max_comments=20, max_depth=1,
+                                  current_depth=0, _visited=None):
         """获取指定推文的所有评论及子评论（递归）。
 
         Args:
@@ -743,11 +909,31 @@ class SeleniumScraper:
         Returns:
             list[dict]: 所有评论（含子评论），每条包含 parent_tweet_id, parent_author, depth 字段
         """
+        if max_comments <= 0:
+            return []
+        if max_depth < 0:
+            raise ValueError("max_depth 不能小于 0")
+
+        parsed = urlparse(tweet_url)
+        if parsed.hostname not in {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}:
+            raise ValueError(f"拒绝访问非 X 域名: {tweet_url!r}")
+        id_match = re.search(r"/status/(\d{5,25})", parsed.path)
+        if not id_match:
+            raise ValueError(f"无效的推文链接: {tweet_url!r}")
+        target_id = id_match.group(1)
+
+        if _visited is None:
+            _visited = set()
+        if target_id in _visited:
+            return []
+        _visited.add(target_id)
+
         all_comments = []
         try:
             self.rate_limiter.wait(label="获取评论")
-            self._navigate(tweet_url, label="推文详情")
-            time.sleep(4)
+            if not self._navigate(tweet_url, label="推文详情"):
+                return all_comments
+            self._wait_for_page_ready()
 
             # 等待评论加载
             try:
@@ -757,37 +943,58 @@ class SeleniumScraper:
             except Exception:
                 return all_comments
 
-            # 滚动加载更多评论
-            original_ids = self.tweet_ids.copy()
-            comments = self._scroll_to_load(
-                max_comments + 1,  # +1 因为第一条是原帖
+            initial_batch = self._extract_tweets_batch()
+            target_tweet = next((t for t in initial_batch if t.get("id") == target_id), None)
+            if not target_tweet:
+                print(f"  ⚠ 未找到目标推文 {target_id}，放弃评论归属")
+                return all_comments
+            parent_author = target_tweet.get("author_handle", "").casefold()
+            if not parent_author:
+                print(f"  ⚠ 无法确定目标推文作者，放弃评论归属")
+                return all_comments
+
+            # 页面会混入上下文和推荐帖。多扫描一些候选项，但只保留
+            # reply_to_handles 明确包含目标作者的直接回复。
+            candidate_target = max(max_comments * 3, max_comments + 5)
+            candidates = self._scroll_to_load(
+                candidate_target,
                 label="评论",
-                max_scrolls=100,
+                max_scrolls=min(80, max(20, max_comments * 2)),
             )
 
-            # 过滤掉原帖和已处理的
-            for c in comments:
-                if c["id"] in original_ids:
+            unverified = 0
+            for c in candidates:
+                if c.get("id") == target_id:
                     continue
-                c["depth"] = 0  # 一级评论
+                if not self._is_direct_reply(c, parent_author):
+                    unverified += 1
+                    continue
+                c["depth"] = current_depth
+                c["parent_comment_id"] = target_id if current_depth > 0 else ""
                 all_comments.append(c)
+                if len(all_comments) >= max_comments:
+                    break
+
+            if unverified:
+                print(f"    精确度过滤：排除 {unverified} 条无法证明归属的上下文/推荐帖")
 
             # 递归获取子评论
-            if max_depth > 0:
-                top_level = [c for c in all_comments if c.get("depth", 0) == 0]
-                for i, comment in enumerate(top_level):
+            if current_depth < max_depth:
+                direct_comments = list(all_comments)
+                for i, comment in enumerate(direct_comments):
                     if comment.get("reply_count", 0) > 0:
                         sub_url = comment.get("tweet_url", "")
                         if not sub_url:
                             continue
-                        print(f"    [{i+1}/{len(top_level)}] 抓取子评论: "
-                              f"@{comment['author_handle']} 的评论 (已有{comment['reply_count']}条回复)...")
+                        print(f"    [{i+1}/{len(direct_comments)}] 抓取子评论: "
+                            f"@{comment['author_handle']} 的评论 (已有{comment['reply_count']}条回复)...")
                         sub_comments = self._fetch_comments_for_tweet(
-                            sub_url, max_comments=20, max_depth=max_depth - 1
+                            sub_url,
+                            max_comments=min(20, max_comments),
+                            max_depth=max_depth,
+                            current_depth=current_depth + 1,
+                            _visited=_visited,
                         )
-                        for sc in sub_comments:
-                            sc["depth"] = 1
-                            sc["parent_comment_id"] = comment["id"]
                         all_comments.extend(sub_comments)
                         print(f"      → 获取 {len(sub_comments)} 条子评论")
 
@@ -812,7 +1019,7 @@ class SeleniumScraper:
         )
 
         # 提取 Profile 统计数据
-        following, followers = self._get_profile_stats(screen_name)
+        following, followers = getattr(self, "_last_profile_stats", ("", ""))
         print(f"  Profile: Following={following}, Followers={followers}")
 
         if not posts:
@@ -903,23 +1110,25 @@ class SeleniumScraper:
         try:
             js = r"""
             var stats = {following: '', followers: ''};
-            var links = document.querySelectorAll('a[href*="/following"], a[href*="/verified_followers"]');
+            var links = document.querySelectorAll(
+              'a[href$="/following"], a[href$="/followers"], a[href*="/verified_followers"]'
+            );
             links.forEach(function(a) {
               var href = a.getAttribute('href') || '';
               var text = (a.innerText || '').trim();
-              var numMatch = text.match(/([\d,.]+)/);
+              var numMatch = text.match(/([\d,.]+\s*[KMB万亿]?)/i);
               var num = numMatch ? numMatch[1] : '';
               if (href.includes('/following') && !href.includes('verified')) {
                 stats.following = num;
-              } else if (href.includes('/verified_followers')) {
+              } else if (href.includes('/verified_followers') || href.endsWith('/followers')) {
                 stats.followers = num;
               }
             });
             // fallback: look for spans with these numbers next to text
             if (!stats.following || !stats.followers) {
               var allText = document.body ? document.body.innerText : '';
-              var followingMatch = allText.match(/([\d,.]+)\s*Following/);
-              var followersMatch = allText.match(/([\d,.]+)\s*Followers/);
+              var followingMatch = allText.match(/([\d,.]+\s*[KMB万亿]?)\s*(?:Following|正在关注)/i);
+              var followersMatch = allText.match(/([\d,.]+\s*[KMB万亿]?)\s*(?:Followers|关注者|粉丝)/i);
               if (followingMatch) stats.following = followingMatch[1];
               if (followersMatch) stats.followers = followersMatch[1];
             }
@@ -993,7 +1202,10 @@ class SeleniumScraper:
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows([
+                {key: sanitize_csv_value(value) for key, value in row.items()}
+                for row in rows
+            ])
 
         print(f"\n✓ 帖子结果已保存到: {output_path}")
 
@@ -1025,7 +1237,10 @@ class SeleniumScraper:
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows([
+                {key: sanitize_csv_value(value) for key, value in row.items()}
+                for row in rows
+            ])
 
         print(f"\n✓ 评论结果已保存到: {output_path}")
 
@@ -1062,7 +1277,10 @@ class SeleniumScraper:
                 since = getattr(cli_args, "since", None)
                 until = getattr(cli_args, "until", None)
                 query = screen_name
-                data = self.fetch_user_timeline(screen_name, count, since, until)
+                data = self.fetch_user_timeline(
+                    screen_name, count, since, until,
+                    keyword_filter=self.filter_xinjiang,
+                )
 
             elif mode == "search":
                 query = cli_args.query
@@ -1071,19 +1289,17 @@ class SeleniumScraper:
                 data = self.fetch_search_tweets(query, count, product)
 
             elif mode == "replies":
-                tweet_id = cli_args.tweet_id
+                tweet_id = self._validate_tweet_id(cli_args.tweet_id)
                 count = cli_args.count
                 query = tweet_id
-                # 使用新的评论抓取方法
                 url = f"https://x.com/i/status/{tweet_id}"
-                self.rate_limiter.wait(label="获取推文")
-                self._navigate(url, label="推文详情")
-                time.sleep(3)
-                data = self._scroll_to_load(count + 1, label="回复")
-                if data:
-                    for t in data[1:]:
-                        t["depth"] = 0
-                    data[0]["is_original"] = True
+                original = self.fetch_tweet(tweet_id)
+                replies = self._fetch_comments_for_tweet(
+                    url, max_comments=count, max_depth=0
+                )
+                if original:
+                    original[0]["is_original"] = True
+                data = original + replies
 
             elif mode == "report":
                 screen_name = cli_args.screen_name
@@ -1167,17 +1383,18 @@ def generate_config(output_path="config.json"):
             "directory": "x_output",
         },
         "rate_limit": {
-            "min_interval_seconds": 8,
-            "max_interval_seconds": 15,
-            "long_pause_seconds": 90,
-            "pages_per_long_pause": 10,
+            "min_interval_seconds": 3,
+            "max_interval_seconds": 6,
+            "long_pause_seconds": 60,
+            "pages_per_long_pause": 20,
             "cooldown_seconds": 300,
             "max_retries": 3,
         },
         "selenium": {
             "headless": False,
             "page_load_timeout": 30,
-            "scroll_pause_seconds": 3,
+            "scroll_pause_seconds": 1.2,
+            "use_undetected": False,
         },
         "filter": {
             "xinjiang_only": True,
