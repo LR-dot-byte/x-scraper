@@ -51,6 +51,11 @@ XINJIANG_ANCHOR_KEYWORDS = [
     "UHRP", "Uyghur Human Rights Project", "Uyghur Congress", "UFLPA",
 ]
 
+# 对应 X 高级搜索中的 “Any of these words”。
+DEFAULT_ADVANCED_SEARCH_WORDS = ("Xinjiang", "维吾尔", "新疆", "Uyghur")
+DEFAULT_ARCHIVE_SINCE = "2024-01-01"
+DEFAULT_ARCHIVE_UNTIL = "2025-12-31"
+
 XINJIANG_CONTEXT_KEYWORDS = [
     # 这些词单独出现不足以证明与新疆相关，只用于辅助分类/调试
     "genocide", "forced labor", "forced labour",
@@ -117,10 +122,15 @@ def _contains_keyword(text, keyword):
 
 def matches_xinjiang(text):
     """仅在命中新疆实体词或专属组织/法案词时返回 True。"""
+    return matches_any_words(text, XINJIANG_ANCHOR_KEYWORDS)
+
+
+def matches_any_words(text, words):
+    """检查文本是否命中给定列表中的任意关键词。"""
     if not text:
         return False
     normalized = unicodedata.normalize("NFKC", str(text)).casefold()
-    return any(_contains_keyword(normalized, kw) for kw in XINJIANG_ANCHOR_KEYWORDS)
+    return any(_contains_keyword(normalized, kw) for kw in words)
 
 
 def sanitize_csv_value(value):
@@ -400,6 +410,13 @@ class SeleniumScraper:
 
         # Xinjiang 关键词过滤
         self.filter_xinjiang = config.get("filter", {}).get("xinjiang_only", True)
+        advanced_cfg = config.get("advanced_search", {})
+        self.advanced_search_enabled = advanced_cfg.get("enabled", True)
+        self.advanced_search_words = advanced_cfg.get(
+            "any_words", list(DEFAULT_ADVANCED_SEARCH_WORDS)
+        )
+        self.advanced_search_since = advanced_cfg.get("since", DEFAULT_ARCHIVE_SINCE)
+        self.advanced_search_until = advanced_cfg.get("until", DEFAULT_ARCHIVE_UNTIL)
 
         # 去重 & 计数
         self.got_count = 0
@@ -445,6 +462,57 @@ class SeleniumScraper:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{name} 必须是 YYYY-MM-DD 格式") from exc
         return value
+
+    @staticmethod
+    def _normalize_any_words(any_words):
+        """校验并规范化高级搜索的 “Any of these words” 列表。"""
+        if any_words is None:
+            any_words = DEFAULT_ADVANCED_SEARCH_WORDS
+        if isinstance(any_words, str):
+            any_words = any_words.split()
+
+        normalized = []
+        seen = set()
+        for raw_word in any_words:
+            word = unicodedata.normalize("NFKC", str(raw_word)).strip()
+            if not word:
+                continue
+            if len(word) > 80 or any(ch in word for ch in ('"', "\n", "\r")):
+                raise ValueError(f"高级搜索关键词无效: {raw_word!r}")
+            key = word.casefold()
+            if key not in seen:
+                normalized.append(word)
+                seen.add(key)
+
+        if not normalized:
+            raise ValueError("高级搜索至少需要一个关键词")
+        if len(normalized) > 20:
+            raise ValueError("高级搜索关键词不能超过 20 个")
+        return normalized
+
+    @classmethod
+    def build_account_advanced_query(cls, screen_name, any_words=None,
+                                     since_date=DEFAULT_ARCHIVE_SINCE,
+                                     until_date=DEFAULT_ARCHIVE_UNTIL):
+        """构造 X 高级搜索查询；until 输入按用户习惯视为包含当日。"""
+        screen_name = cls._validate_screen_name(screen_name)
+        since_date = cls._validate_date(since_date, "--since")
+        until_date = cls._validate_date(until_date, "--until")
+        if not since_date or not until_date:
+            raise ValueError("账号高级搜索必须同时指定 --since 和 --until")
+        if since_date > until_date:
+            raise ValueError("--since 不能晚于 --until")
+
+        words = cls._normalize_any_words(any_words)
+        quoted_words = " OR ".join(f'"{word}"' for word in words)
+        # X 的 until: 操作符按次日零点截断。对用户暴露的 --until 保持包含当日语义。
+        until_exclusive = (
+            datetime.strptime(until_date, "%Y-%m-%d").date() + timedelta(days=1)
+        ).isoformat()
+        return (
+            f"({quoted_words}) from:{screen_name} "
+            f"since:{since_date} until:{until_exclusive}"
+        )
 
     @staticmethod
     def _cst_date_from_iso(iso_value):
@@ -629,7 +697,7 @@ class SeleniumScraper:
 
     def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
                         since_date=None, until_date=None, keyword_filter=False,
-                        expected_author=None):
+                        expected_author=None, any_words_filter=None):
         """滚动页面加载更多推文。
 
         Args:
@@ -712,6 +780,12 @@ class SeleniumScraper:
                     if handle.casefold() != expected_author.casefold():
                         self.skipped_count += 1
                         continue
+
+                if any_words_filter and not matches_any_words(
+                    data.get("text", ""), any_words_filter
+                ):
+                    self.skipped_count += 1
+                    continue
 
                 # 关键词在时间判断之后处理。
                 if keyword_filter and not matches_xinjiang(data.get("text", "")):
@@ -836,7 +910,6 @@ class SeleniumScraper:
             raise ValueError("--since 不能晚于 --until")
         if count <= 0:
             raise ValueError("--count 必须大于 0")
-        url = f"https://x.com/{screen_name}"
         print(f"正在访问用户主页: @{screen_name}")
         if since_date or until_date:
             print(f"时间段: {since_date or '不限'} ~ {until_date or '不限'}")
@@ -844,12 +917,8 @@ class SeleniumScraper:
             print(f"关键词过滤: 新疆/Uyghur/Xinjiang")
         print(f"目标: {count} 条推文")
 
-        self.rate_limiter.wait(label="访问主页")
-        if not self._navigate(url, label="用户主页"):
+        if not self._load_profile_stats(screen_name):
             return []
-        self._wait_for_page_ready()
-        # Profile 统计位于页面顶部，滚动后会被 X 的虚拟 DOM 移除。
-        self._last_profile_stats = self._get_profile_stats(screen_name)
 
         tweets = self._scroll_to_load(
             count, label=f"@{screen_name}",
@@ -862,6 +931,71 @@ class SeleniumScraper:
         print(f"  ✓ 实际获取 {len(tweets)} 条 @{screen_name} 的推文")
         if keyword_filter and self.skipped_count > 0:
             print(f"     (跳过 {self.skipped_count} 条不相关推文)")
+        return tweets
+
+    def _load_profile_stats(self, screen_name):
+        """访问账号主页并在滚动前保存 Profile 统计。"""
+        screen_name = self._validate_screen_name(screen_name)
+        url = f"https://x.com/{screen_name}"
+        self.rate_limiter.wait(label="访问主页")
+        if not self._navigate(url, label="用户主页"):
+            return False
+        self._wait_for_page_ready()
+        # Profile 统计位于页面顶部，滚动后会被 X 的虚拟 DOM 移除。
+        self._last_profile_stats = self._get_profile_stats(screen_name)
+        return True
+
+    def fetch_account_advanced_search(
+        self,
+        screen_name,
+        count=9999,
+        since_date=DEFAULT_ARCHIVE_SINCE,
+        until_date=DEFAULT_ARCHIVE_UNTIL,
+        any_words=None,
+        load_profile=True,
+    ):
+        """用 X 高级搜索抓取指定账号、日期范围和任一关键词命中的帖子。"""
+        screen_name = self._validate_screen_name(screen_name)
+        since_date = self._validate_date(since_date, "--since")
+        until_date = self._validate_date(until_date, "--until")
+        if count <= 0:
+            raise ValueError("--count 必须大于 0")
+        source_words = self.advanced_search_words if any_words is None else any_words
+        words = self._normalize_any_words(source_words)
+        query = self.build_account_advanced_query(
+            screen_name,
+            any_words=words,
+            since_date=since_date,
+            until_date=until_date,
+        )
+
+        print(f"正在使用 X 高级搜索抓取 @{screen_name}")
+        print(f"Any of these words: {' / '.join(words)}")
+        print(f"时间段（含首尾）: {since_date} ~ {until_date}")
+        print(f"高级搜索查询: {query}")
+        print(f"目标: {count} 条推文")
+
+        if load_profile and not self._load_profile_stats(screen_name):
+            self._last_profile_stats = ("", "")
+            print("  ⚠ Profile 统计读取失败，继续执行高级搜索")
+
+        encoded_query = quote_plus(query)
+        url = f"https://x.com/search?q={encoded_query}&src=typed_query&f=live"
+        self.rate_limiter.wait(label="账号高级搜索")
+        if not self._navigate(url, label="账号高级搜索"):
+            return []
+        self._wait_for_page_ready()
+
+        tweets = self._scroll_to_load(
+            count,
+            label=f"高级搜索@{screen_name}",
+            since_date=since_date,
+            until_date=until_date,
+            expected_author=screen_name,
+            any_words_filter=words,
+        )
+        self.got_count += len(tweets)
+        print(f"  ✓ 高级搜索实际获取 {len(tweets)} 条 @{screen_name} 的相关推文")
         return tweets
 
     def fetch_search_tweets(self, query, count=20, product="Latest"):
@@ -1004,19 +1138,31 @@ class SeleniumScraper:
         return all_comments
 
     def fetch_report(self, screen_name, since_date, until_date=None,
-                     replies_per_tweet=20, max_comment_depth=1):
+                     replies_per_tweet=20, max_comment_depth=1,
+                     use_advanced_search=True, any_words=None):
         """一站式报告。返回 (posts, comments, following, followers)。"""
-        # 第一步：获取用户时间线
+        # 第一步：优先使用服务器端高级搜索缩小账号、关键词和日期范围。
         print(f"\n{'='*40}")
-        print(f"  第一步：抓取 @{screen_name} 的时间线")
-        print(f"  关键词: 新疆 / Xinjiang / Uyghur")
+        if use_advanced_search:
+            print(f"  第一步：高级搜索 @{screen_name} 的相关帖子")
+        else:
+            print(f"  第一步：扫描 @{screen_name} 的时间线（兼容模式）")
         print(f"{'='*40}")
-        posts = self.fetch_user_timeline(
-            screen_name, count=9999,
-            since_date=since_date,
-            until_date=until_date,
-            keyword_filter=True,
-        )
+        if use_advanced_search:
+            posts = self.fetch_account_advanced_search(
+                screen_name,
+                count=9999,
+                since_date=since_date,
+                until_date=until_date,
+                any_words=any_words,
+            )
+        else:
+            posts = self.fetch_user_timeline(
+                screen_name, count=9999,
+                since_date=since_date,
+                until_date=until_date,
+                keyword_filter=True,
+            )
 
         # 提取 Profile 统计数据
         following, followers = getattr(self, "_last_profile_stats", ("", ""))
@@ -1288,6 +1434,21 @@ class SeleniumScraper:
                 product = cli_args.product
                 data = self.fetch_search_tweets(query, count, product)
 
+            elif mode == "account-search":
+                screen_name = cli_args.screen_name
+                count = cli_args.count
+                since = cli_args.since or self.advanced_search_since
+                until = cli_args.until or self.advanced_search_until
+                words = cli_args.any_words or self.advanced_search_words
+                query = screen_name
+                data = self.fetch_account_advanced_search(
+                    screen_name,
+                    count=count,
+                    since_date=since,
+                    until_date=until,
+                    any_words=words,
+                )
+
             elif mode == "replies":
                 tweet_id = self._validate_tweet_id(cli_args.tweet_id)
                 count = cli_args.count
@@ -1303,14 +1464,27 @@ class SeleniumScraper:
 
             elif mode == "report":
                 screen_name = cli_args.screen_name
-                since_date = cli_args.since
-                until_date = getattr(cli_args, "until", None)
+                since_date = cli_args.since or self.advanced_search_since
+                until_date = cli_args.until or self.advanced_search_until
                 reply_count = cli_args.replies
                 max_depth = getattr(cli_args, "depth", 1)
+                requested_search_mode = getattr(cli_args, "advanced_search", None)
+                use_advanced_search = (
+                    self.advanced_search_enabled
+                    if requested_search_mode is None
+                    else requested_search_mode
+                )
+                words = cli_args.any_words or self.advanced_search_words
                 query = screen_name
 
                 posts, comments, following, followers = self.fetch_report(
-                    screen_name, since_date, until_date, reply_count, max_depth
+                    screen_name,
+                    since_date,
+                    until_date,
+                    reply_count,
+                    max_depth,
+                    use_advanced_search=use_advanced_search,
+                    any_words=words,
                 )
 
                 # 输出帖子 CSV（列对齐 24-25年知情代理人涉疆数据.xlsx）
@@ -1357,7 +1531,11 @@ class SeleniumScraper:
             output_path = self._make_output_path(query, mode)
 
         if data:
-            self.export_posts_csv(data, output_path)
+            if mode in {"timeline", "account-search"}:
+                following, followers = getattr(self, "_last_profile_stats", ("", ""))
+                self.export_posts_csv(data, output_path, following, followers)
+            else:
+                self.export_posts_csv(data, output_path)
 
         print_summary(
             mode=mode,
@@ -1399,6 +1577,12 @@ def generate_config(output_path="config.json"):
         "filter": {
             "xinjiang_only": True,
         },
+        "advanced_search": {
+            "enabled": True,
+            "any_words": list(DEFAULT_ADVANCED_SEARCH_WORDS),
+            "since": DEFAULT_ARCHIVE_SINCE,
+            "until": DEFAULT_ARCHIVE_UNTIL,
+        },
     }
 
     if os.path.exists(output_path):
@@ -1435,8 +1619,9 @@ def main():
   python3 x_scraper.py timeline elonmusk --count 50           获取用户时间线
   python3 x_scraper.py timeline elonmusk --since 2025-01-01   时间段过滤
   python3 x_scraper.py search "python" --count 20             搜索推文
+  python3 x_scraper.py account-search elonmusk                高级搜索账号的 2024-2025 涉疆帖子
   python3 x_scraper.py replies 1234567890 --count 30          获取推文回复
-  python3 x_scraper.py report elonmusk --since 2025-01-01 --replies 20 --depth 1  一站式报告
+  python3 x_scraper.py report elonmusk --replies 20 --depth 1 高级搜索 + 评论报告
         """,
     )
 
@@ -1481,6 +1666,29 @@ def main():
     )
     search_parser.add_argument("-o", "--output", help="输出文件路径")
 
+    # ---- account-search ----
+    account_search_parser = subparsers.add_parser(
+        "account-search",
+        help="使用 X 高级搜索抓取指定账号和日期范围内的任一关键词帖子",
+    )
+    account_search_parser.add_argument("screen_name", help="用户 screen name")
+    account_search_parser.add_argument(
+        "--count", type=int, default=9999, help="最多获取多少条帖子 (默认: 9999)"
+    )
+    account_search_parser.add_argument(
+        "--since", help=f"起始日期 YYYY-MM-DD (默认: {DEFAULT_ARCHIVE_SINCE})"
+    )
+    account_search_parser.add_argument(
+        "--until", help=f"截止日期 YYYY-MM-DD，包含当日 (默认: {DEFAULT_ARCHIVE_UNTIL})"
+    )
+    account_search_parser.add_argument(
+        "--any-words",
+        nargs="+",
+        metavar="WORD",
+        help='“Any of these words” 关键词列表 (默认: Xinjiang 维吾尔 新疆 Uyghur)',
+    )
+    account_search_parser.add_argument("-o", "--output", help="输出文件路径")
+
     # ---- replies ----
     replies_parser = subparsers.add_parser("replies", help="获取指定推文的回复列表（含原帖）")
     replies_parser.add_argument("tweet_id", help="推文 ID")
@@ -1495,10 +1703,36 @@ def main():
     )
 
     # ---- report ----
-    report_parser = subparsers.add_parser("report", help="一站式报告：用户时间线 + 评论 + 子评论")
+    report_parser = subparsers.add_parser(
+        "report", help="一站式报告：账号高级搜索 + 评论 + 子评论"
+    )
     report_parser.add_argument("screen_name", help="用户 screen name（@后面部分）")
-    report_parser.add_argument("--since", required=True, help="起始日期 YYYY-MM-DD（必填）")
-    report_parser.add_argument("--until", help="截止日期 YYYY-MM-DD（可选）")
+    report_parser.add_argument(
+        "--since", help=f"起始日期 YYYY-MM-DD (默认: {DEFAULT_ARCHIVE_SINCE})"
+    )
+    report_parser.add_argument(
+        "--until", help=f"截止日期 YYYY-MM-DD，包含当日 (默认: {DEFAULT_ARCHIVE_UNTIL})"
+    )
+    report_parser.add_argument(
+        "--any-words",
+        nargs="+",
+        metavar="WORD",
+        help='高级搜索“Any of these words” (默认: Xinjiang 维吾尔 新疆 Uyghur)',
+    )
+    search_mode_group = report_parser.add_mutually_exclusive_group()
+    search_mode_group.add_argument(
+        "--advanced-search",
+        dest="advanced_search",
+        action="store_true",
+        default=None,
+        help="强制使用 X 高级搜索（默认由配置决定）",
+    )
+    search_mode_group.add_argument(
+        "--timeline-scan",
+        dest="advanced_search",
+        action="store_false",
+        help="禁用高级搜索，回退到主页时间线扫描",
+    )
     report_parser.add_argument("--replies", type=int, default=20, help="每条推文取多少一级评论 (默认: 20)")
     report_parser.add_argument("--depth", type=int, default=1,
                                help="子评论递归深度: 0=仅一级评论, 1=含一级子评论 (默认: 1)")
