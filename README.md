@@ -10,6 +10,8 @@
 - 实体词匹配、作者校验与中英文互动数据解析；
 - Cookie 文件权限保护、CSV 公式注入防护和输入校验。
 - 账号级 X 高级搜索，在服务器端预先限定作者、任一关键词和日期范围。
+- 严格涉疆审核：`新疆/Xinjiang` 等直接通过，仅提到维吾尔时还需中国与事件语境。
+- 自动进入有回复的帖子核对实际可见评论，并输出到独立 `comments/` 目录。
 
 ## 安装
 
@@ -47,7 +49,8 @@ Cookie 等同于登录凭据：不要提交到 Git，也不要分享给他人。
 
 `account-search` 和 `report` 默认等价于在 X 高级搜索中设置：
 
-- **Any of these words**：`Xinjiang 维吾尔 新疆 Uyghur`
+- **Any of these words**：包括 `Xinjiang 维吾尔 新疆 Uyghur/Uighur`、
+  `Uiguren`、`East Turkistan/East Turkestan` 等常见变体
 - **From these accounts**：命令中指定的账号
 - **From date**：`2024-01-01`
 - **To date**：`2025-12-31`（包含当日）
@@ -73,6 +76,38 @@ python3 x_scraper.py account-search UHRP_Chinese \
 python3 x_scraper.py report UHRP_Chinese --timeline-scan
 ```
 
+### 自动评论核对
+
+`timeline` 和 `account-search` 默认只对页面显示有回复的帖子打开详情页，
+把实际可见且能验证回复归属的评论写入 `x_output/comments/`。评论列固定为：
+
+`账号名、ID名、时间、文本、回复者ID`
+
+帖子 CSV 的 `reply` 保留 X 页面显示的回复数，`评论条数`记录实际抓到的唯一评论数。
+可以临时关闭或调整抓取量：
+
+```bash
+python3 x_scraper.py account-search UHRP_Chinese --no-comments
+python3 x_scraper.py account-search UHRP_Chinese --max-comments 300 --comment-depth 1
+```
+
+配置模板中的相关设置：
+
+```json
+{
+  "filter": {
+    "xinjiang_only": true,
+    "strict_china_context": true
+  },
+  "comments": {
+    "enabled": true,
+    "directory": "comments",
+    "max_per_post": 1000,
+    "max_depth": 0
+  }
+}
+```
+
 ## 准确度说明
 
-评论模式只保留页面上能明确证明回复目标作者的记录。当 X 页面未提供可验证的回复标记时，程序会倾向少抓，避免将推荐帖误判为评论。
+评论模式只保留页面上能明确证明回复目标作者的记录。当 X 页面未提供可验证的回复标记、评论被删除、折叠或不可见时，实际抓取数可能低于 X 展示数；程序会倾向少抓，避免将推荐帖误判为评论。

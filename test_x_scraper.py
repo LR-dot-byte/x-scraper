@@ -1,4 +1,7 @@
 import unittest
+import csv
+import tempfile
+from pathlib import Path
 
 import x_scraper
 
@@ -12,10 +15,24 @@ class FakeDriver:
 
 
 class FilterTests(unittest.TestCase):
-    def test_anchor_keywords_match(self):
+    def test_direct_xinjiang_keywords_match_without_more_context(self):
         self.assertTrue(x_scraper.matches_xinjiang("这是一则新疆相关消息"))
+        self.assertTrue(x_scraper.matches_xinjiang("A short Xinjiang update"))
+        self.assertTrue(x_scraper.matches_xinjiang("News from East Turkestan"))
         self.assertTrue(x_scraper.matches_xinjiang("UFLPA enforcement update"))
-        self.assertTrue(x_scraper.matches_xinjiang("Support for Uyghur families"))
+
+    def test_uyghur_mention_alone_is_not_enough(self):
+        self.assertFalse(x_scraper.matches_xinjiang("Support for Uyghur families"))
+        self.assertFalse(x_scraper.matches_xinjiang("Uyghur food and music festival"))
+
+    def test_uyghur_requires_china_and_event_context(self):
+        self.assertTrue(
+            x_scraper.matches_xinjiang(
+                "Chinese authorities detained a Uyghur activist and sent him to prison"
+            )
+        )
+        self.assertFalse(x_scraper.matches_xinjiang("A Uyghur visitor travelled to China"))
+        self.assertFalse(x_scraper.matches_xinjiang("A detained Uyghur activist spoke today"))
 
     def test_generic_context_words_do_not_match_alone(self):
         self.assertFalse(x_scraper.matches_xinjiang("oppression and deportation elsewhere"))
@@ -91,6 +108,7 @@ class AdvancedSearchTests(unittest.TestCase):
             visited["scroll_kwargs"]["any_words_filter"],
             list(x_scraper.DEFAULT_ADVANCED_SEARCH_WORDS),
         )
+        self.assertTrue(visited["scroll_kwargs"]["relevance_audit"])
 
 
 class CsvSafetyTests(unittest.TestCase):
@@ -190,6 +208,73 @@ class CommentAttributionTests(unittest.TestCase):
         self.assertTrue(x_scraper.SeleniumScraper._is_direct_reply(direct, "@target"))
         self.assertFalse(x_scraper.SeleniumScraper._is_direct_reply(recommendation, "target"))
         self.assertFalse(x_scraper.SeleniumScraper._is_direct_reply(missing, "target"))
+
+    def test_comment_csv_has_requested_columns_in_order(self):
+        scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
+        data = [{
+            "author_name": "Reply User",
+            "author_handle": "reply_user",
+            "created_at": "2025-01-02T03:04:00Z",
+            "text": "comment text",
+            "reply_to_handles": "post_owner",
+            "parent_tweet_author": "post_owner",
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "comments.csv"
+            scraper.export_comments_csv(data, str(output))
+            with output.open(encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            self.assertEqual(
+                reader.fieldnames,
+                ["账号名", "ID名", "时间", "文本", "回复者ID"],
+            )
+            # @ 开头的外部文本会加单引号，防止 Excel 公式注入。
+            self.assertEqual(rows[0]["ID名"], "'@reply_user")
+            self.assertEqual(rows[0]["回复者ID"], "'@post_owner")
+
+    def test_actual_comment_count_is_written_to_post_csv(self):
+        scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
+        data = [{
+            "author_name": "Owner",
+            "author_handle": "owner",
+            "created_at": "2025-01-02T03:04:00Z",
+            "text": "Xinjiang update",
+            "reply_count": 12,
+            "actual_comment_count": 3,
+        }]
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "posts.csv"
+            scraper.export_posts_csv(data, str(output))
+            with output.open(encoding="utf-8-sig", newline="") as f:
+                row = next(csv.DictReader(f))
+            self.assertEqual(row["reply"], "12")
+            self.assertEqual(row["评论条数"], "3")
+
+    def test_only_posts_with_reported_replies_open_details(self):
+        scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
+        scraper.max_comments_per_post = 20
+        scraper.max_comment_depth = 0
+        visited = []
+        scraper._fetch_comments_for_tweet = lambda url, **kwargs: (
+            visited.append(url)
+            or [{
+                "id": "90001",
+                "author_handle": "reply_user",
+                "reply_to_handles": "owner",
+            }]
+        )
+        posts = [
+            {"id": "10001", "reply_count": 0, "tweet_url": "https://x.com/owner/status/10001",
+             "author_handle": "owner"},
+            {"id": "10002", "reply_count": 2, "tweet_url": "https://x.com/owner/status/10002",
+             "author_handle": "owner"},
+        ]
+        comments = scraper.fetch_comments_for_posts(posts)
+        self.assertEqual(visited, ["https://x.com/owner/status/10002"])
+        self.assertEqual(posts[0]["actual_comment_count"], 0)
+        self.assertEqual(posts[1]["actual_comment_count"], 1)
+        self.assertEqual(comments[0]["reply_target_handle"], "owner")
 
 
 if __name__ == "__main__":

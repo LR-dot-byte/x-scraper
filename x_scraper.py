@@ -42,17 +42,41 @@ except ImportError:
 # ============================================================
 #  新疆相关关键词（用于过滤帖子）
 # ============================================================
-XINJIANG_ANCHOR_KEYWORDS = [
-    # 直接指向新疆/维吾尔议题：命中任意一个即可保留
-    "新疆", "维吾尔", "东突", "东突厥",
-    "Xinjiang", "Uyghur", "Uighur", "Uygur", "Uigur",
-    "East Turkestan", "East Turkistan",
-    "ウイグル", "อุยกูร์",
-    "UHRP", "Uyghur Human Rights Project", "Uyghur Congress", "UFLPA",
+XINJIANG_DIRECT_KEYWORDS = [
+    # 地名、地区别称和新疆专属法案：命中即可直接保留。
+    "新疆", "东突", "东突厥", "Xinjiang", "XUAR",
+    "East Turkestan", "East Turkistan", "UFLPA",
+]
+
+UYGHUR_IDENTITY_KEYWORDS = [
+    # 仅出现族群名称还不够，必须同时具备中国语境和事件语境。
+    "维吾尔", "Uyghur", "Uyghurs", "Uighur", "Uighurs",
+    "Uygur", "Uygurs", "Uigur", "Uiguren", "ウイグル", "อุยกูร์",
+]
+
+CHINA_CONTEXT_KEYWORDS = [
+    "中国", "中國", "中共", "北京", "China", "Chinese", "CCP", "PRC",
+    "Beijing", "Chinese government", "Chinese authorities",
+    "Chinese Communist Party",
+]
+
+UYGHUR_EVENT_KEYWORDS = [
+    "拘留", "关押", "监禁", "逮捕", "判刑", "失踪", "集中营", "再教育营",
+    "强迫劳动", "人权", "镇压", "迫害", "遣返", "引渡", "制裁", "释放",
+    "detain", "detained", "detention", "interned", "internment",
+    "imprison", "imprisoned", "prison", "arrest", "arrested", "sentence",
+    "sentenced", "disappear", "disappeared", "camp", "re-education",
+    "forced labor", "forced labour", "genocide", "human rights",
+    "persecution", "repression", "surveillance", "deport", "deported",
+    "deportation", "repatriation", "extradition", "sanction", "sanctions",
+    "release", "released", "asylum", "activist", "political prisoner",
 ]
 
 # 对应 X 高级搜索中的 “Any of these words”。
-DEFAULT_ADVANCED_SEARCH_WORDS = ("Xinjiang", "维吾尔", "新疆", "Uyghur")
+DEFAULT_ADVANCED_SEARCH_WORDS = (
+    "Xinjiang", "维吾尔", "新疆", "Uyghur", "Uighur", "Uyghurs", "Uighurs",
+    "Uiguren", "East Turkistan", "East Turkestan",
+)
 DEFAULT_ARCHIVE_SINCE = "2024-01-01"
 DEFAULT_ARCHIVE_UNTIL = "2025-12-31"
 
@@ -121,8 +145,18 @@ def _contains_keyword(text, keyword):
 
 
 def matches_xinjiang(text):
-    """仅在命中新疆实体词或专属组织/法案词时返回 True。"""
-    return matches_any_words(text, XINJIANG_ANCHOR_KEYWORDS)
+    """严格审核涉疆相关性。
+
+    新疆地名/地区别称直接通过；仅出现维吾尔族群名称时，必须同时出现
+    中国语境和具体事件语境，避免把饮食、音乐、语言等一般内容误收录。
+    """
+    if matches_any_words(text, XINJIANG_DIRECT_KEYWORDS):
+        return True
+    return (
+        matches_any_words(text, UYGHUR_IDENTITY_KEYWORDS)
+        and matches_any_words(text, CHINA_CONTEXT_KEYWORDS)
+        and matches_any_words(text, UYGHUR_EVENT_KEYWORDS)
+    )
 
 
 def matches_any_words(text, words):
@@ -409,7 +443,9 @@ class SeleniumScraper:
         self.scroll_pause = max(0.3, min(float(self.scroll_pause), 5.0))
 
         # Xinjiang 关键词过滤
-        self.filter_xinjiang = config.get("filter", {}).get("xinjiang_only", True)
+        filter_cfg = config.get("filter", {})
+        self.filter_xinjiang = filter_cfg.get("xinjiang_only", True)
+        self.strict_xinjiang_audit = filter_cfg.get("strict_china_context", True)
         advanced_cfg = config.get("advanced_search", {})
         self.advanced_search_enabled = advanced_cfg.get("enabled", True)
         self.advanced_search_words = advanced_cfg.get(
@@ -417,6 +453,24 @@ class SeleniumScraper:
         )
         self.advanced_search_since = advanced_cfg.get("since", DEFAULT_ARCHIVE_SINCE)
         self.advanced_search_until = advanced_cfg.get("until", DEFAULT_ARCHIVE_UNTIL)
+
+        # 评论抓取：仅对页面显示有回复的帖子进入详情页，实际可见评论另存目录。
+        comments_cfg = config.get("comments", {})
+        self.auto_fetch_comments = comments_cfg.get("enabled", True)
+        self.max_comments_per_post = max(
+            1, min(int(comments_cfg.get("max_per_post", 1000)), 1000)
+        )
+        self.max_comment_depth = max(
+            0, min(int(comments_cfg.get("max_depth", 0)), 3)
+        )
+        comments_directory = str(comments_cfg.get("directory", "comments")).strip()
+        if not comments_directory:
+            comments_directory = "comments"
+        if os.path.isabs(comments_directory):
+            self.comments_dir = comments_directory
+        else:
+            self.comments_dir = os.path.join(self.output_dir, comments_directory)
+        os.makedirs(self.comments_dir, exist_ok=True)
 
         # 去重 & 计数
         self.got_count = 0
@@ -697,7 +751,8 @@ class SeleniumScraper:
 
     def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
                         since_date=None, until_date=None, keyword_filter=False,
-                        expected_author=None, any_words_filter=None):
+                        expected_author=None, any_words_filter=None,
+                        relevance_audit=False):
         """滚动页面加载更多推文。
 
         Args:
@@ -784,6 +839,11 @@ class SeleniumScraper:
                 if any_words_filter and not matches_any_words(
                     data.get("text", ""), any_words_filter
                 ):
+                    self.skipped_count += 1
+                    continue
+
+                # X 搜索只负责召回候选项；最终仍在本地执行严格相关性审核。
+                if relevance_audit and not matches_xinjiang(data.get("text", "")):
                     self.skipped_count += 1
                     continue
 
@@ -993,6 +1053,7 @@ class SeleniumScraper:
             until_date=until_date,
             expected_author=screen_name,
             any_words_filter=words,
+            relevance_audit=getattr(self, "strict_xinjiang_audit", True),
         )
         self.got_count += len(tweets)
         print(f"  ✓ 高级搜索实际获取 {len(tweets)} 条 @{screen_name} 的相关推文")
@@ -1137,6 +1198,72 @@ class SeleniumScraper:
 
         return all_comments
 
+    def fetch_comments_for_posts(self, posts, max_comments=None, max_depth=None):
+        """进入有回复的帖子详情页，抓取实际可见评论并回填实际数量。"""
+        if max_comments is None:
+            max_comments = self.max_comments_per_post
+        if max_depth is None:
+            max_depth = self.max_comment_depth
+        max_comments = max(1, min(int(max_comments), 1000))
+        max_depth = max(0, min(int(max_depth), 3))
+
+        all_comments = []
+        seen_comment_ids = set()
+        candidates = [post for post in posts if int(post.get("reply_count", 0) or 0) > 0]
+        print(
+            f"\n评论检查：{len(posts)} 条帖子中有 {len(candidates)} 条显示存在回复，"
+            "将进入详情页核对实际可见评论"
+        )
+
+        for index, post in enumerate(posts, start=1):
+            reported_count = int(post.get("reply_count", 0) or 0)
+            post["actual_comment_count"] = 0
+            if reported_count <= 0:
+                continue
+
+            tweet_url = post.get("tweet_url", "")
+            if not tweet_url:
+                print(f"  ⚠ [{index}/{len(posts)}] 帖子缺少详情链接，无法核对评论")
+                continue
+
+            print(
+                f"  [{index}/{len(posts)}] 页面显示 {reported_count} 条回复，"
+                f"核对帖子 {post.get('id', '')}"
+            )
+            comments = self._fetch_comments_for_tweet(
+                tweet_url,
+                max_comments=max_comments,
+                max_depth=max_depth,
+            )
+
+            actual_for_post = []
+            for comment in comments:
+                comment_id = comment.get("id", "")
+                if not comment_id or comment_id in seen_comment_ids:
+                    continue
+                seen_comment_ids.add(comment_id)
+                comment["parent_tweet_id"] = post.get("id", "")
+                comment["parent_tweet_author"] = post.get("author_handle", "")
+                reply_targets = [
+                    handle.strip().lstrip("@")
+                    for handle in comment.get("reply_to_handles", "").split(",")
+                    if handle.strip()
+                ]
+                comment["reply_target_handle"] = (
+                    reply_targets[0] if reply_targets else post.get("author_handle", "")
+                )
+                actual_for_post.append(comment)
+
+            post["actual_comment_count"] = len(actual_for_post)
+            all_comments.extend(actual_for_post)
+            print(
+                f"    → 页面标示 {reported_count} 条，实际抓到并验证 "
+                f"{len(actual_for_post)} 条可见评论"
+            )
+
+        print(f"✓ 评论核对完成：共抓取 {len(all_comments)} 条唯一评论")
+        return all_comments
+
     def fetch_report(self, screen_name, since_date, until_date=None,
                      replies_per_tweet=20, max_comment_depth=1,
                      use_advanced_search=True, any_words=None):
@@ -1174,38 +1301,16 @@ class SeleniumScraper:
 
         print(f"\n✓ 第一步完成：获取 {len(posts)} 条新疆相关推文")
 
-        # 第二步：对每条推文抓取评论（含子评论）
+        # 第二步：仅对有回复的帖子进入详情页，抓取实际可见评论。
         print(f"\n{'='*40}")
         print(f"  第二步：抓取每条推文的评论 (一级{replies_per_tweet}条 + 子评论深度{max_comment_depth})")
         print(f"{'='*40}")
 
-        all_comments = []
-        for i, post in enumerate(posts):
-            tweet_url = post.get("tweet_url", "")
-            if not tweet_url:
-                continue
-
-            txt_preview = post['text'][:60].replace('\n', ' ')
-            print(f"\n[{i+1}/{len(posts)}] {txt_preview}...")
-            print(f"    作者: @{post['author_handle']} | {post['created_at'][:16] if post.get('created_at') else '?'}")
-
-            comments = self._fetch_comments_for_tweet(
-                tweet_url,
-                max_comments=replies_per_tweet,
-                max_depth=max_comment_depth,
-            )
-
-            # 给每条评论打上所属推文信息
-            for c in comments:
-                c["parent_tweet_id"] = post["id"]
-                c["parent_tweet_author"] = post["author_handle"]
-                if "parent_comment_id" not in c:
-                    c["parent_comment_id"] = ""
-
-            all_comments.extend(comments)
-            depth0 = sum(1 for c in comments if c.get("depth", 0) == 0)
-            depth1 = sum(1 for c in comments if c.get("depth", 0) >= 1)
-            print(f"  → 一级评论 {depth0} 条 + 子评论 {depth1} 条 = 共 {len(comments)} 条")
+        all_comments = self.fetch_comments_for_posts(
+            posts,
+            max_comments=replies_per_tweet,
+            max_depth=max_comment_depth,
+        )
 
         print(f"\n✓ 第二步完成：共获取 {len(all_comments)} 条评论")
         return posts, all_comments, following, followers
@@ -1342,7 +1447,9 @@ class SeleniumScraper:
                 "likes": d.get("favorite_count", 0),
                 "views": d.get("view_count", 0),
                 "vedios/photos": media_str,
-                "评论条数": d.get("reply_count", 0),
+                "评论条数": d.get(
+                    "actual_comment_count", d.get("reply_count", 0)
+                ),
             })
 
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -1356,28 +1463,21 @@ class SeleniumScraper:
         print(f"\n✓ 帖子结果已保存到: {output_path}")
 
     def export_comments_csv(self, data, output_path):
-        """导出评论 CSV，列格式与 评论.xlsx 一致。
-
-        列: (序号), account, tweet_id, link, time, text, 贴主ID
-        """
-        if not data:
-            print("⚠ 无评论数据可输出")
-            return
-
-        fieldnames = [
-            "序号", "account", "tweet_id", "link", "time", "text", "贴主ID",
-        ]
+        """按固定顺序导出评论：账号名、ID名、时间、文本、回复者ID。"""
+        fieldnames = ["账号名", "ID名", "时间", "文本", "回复者ID"]
 
         rows = []
-        for i, d in enumerate(data):
+        for d in data:
+            reply_target = (
+                d.get("reply_target_handle", "")
+                or d.get("parent_tweet_author", "")
+            )
             rows.append({
-                "序号": i,
-                "account": d.get("author_name", ""),
-                "tweet_id": self._ensure_at(d.get("author_handle", "")),
-                "link": d.get("tweet_url", ""),
-                "time": self._fmt_time_comments(d.get("created_at", "")),
-                "text": d.get("text", ""),
-                "贴主ID": self._ensure_at(d.get("parent_tweet_author", "")),
+                "账号名": d.get("author_name", ""),
+                "ID名": self._ensure_at(d.get("author_handle", "")),
+                "时间": self._fmt_time_comments(d.get("created_at", "")),
+                "文本": d.get("text", ""),
+                "回复者ID": self._ensure_at(reply_target),
             })
 
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -1388,7 +1488,7 @@ class SeleniumScraper:
                 for row in rows
             ])
 
-        print(f"\n✓ 评论结果已保存到: {output_path}")
+        print(f"\n✓ 评论结果已保存到: {output_path}（{len(rows)} 条）")
 
     def _make_output_path(self, query, suffix=""):
         """生成输出文件路径。"""
@@ -1401,6 +1501,14 @@ class SeleniumScraper:
         filename = f"{safe_query}_{ts}.csv"
         return os.path.join(self.output_dir, filename)
 
+    def _make_comments_output_path(self, query):
+        """在独立 comments 目录生成评论文件路径。"""
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_query = "".join(
+            c for c in str(query) if c.isalnum() or c in "_- "
+        )[:50].strip().replace(" ", "_") or "comments"
+        return os.path.join(self.comments_dir, f"{safe_query}_comments_{ts}.csv")
+
     # ----- 调度入口 -----
 
     def start(self, cli_args):
@@ -1409,6 +1517,8 @@ class SeleniumScraper:
 
         mode = cli_args.mode
         data = []
+        comments = []
+        comment_output_path = None
         query = ""
 
         try:
@@ -1494,11 +1604,9 @@ class SeleniumScraper:
                 if posts:
                     self.export_posts_csv(posts, post_path, following, followers)
 
-                # 输出评论 CSV（列对齐 评论.xlsx）
-                comment_path = None
-                if comments:
-                    comment_path = self._make_output_path(query, "comments")
-                    self.export_comments_csv(comments, comment_path)
+                # 评论始终放在独立 comments 目录；即使为 0 条也保留表头。
+                comment_path = self._make_comments_output_path(query)
+                self.export_comments_csv(comments, comment_path)
 
                 print_summary(
                     mode=mode,
@@ -1509,6 +1617,31 @@ class SeleniumScraper:
                     skipped=self.skipped_count,
                 )
                 return
+
+            # timeline/account-search 默认自动核对有回复帖子的实际评论。
+            if mode in {"timeline", "account-search"} and data:
+                requested_comments = getattr(cli_args, "comments", None)
+                comments_enabled = (
+                    self.auto_fetch_comments
+                    if requested_comments is None
+                    else requested_comments
+                )
+                if comments_enabled:
+                    max_comments = (
+                        getattr(cli_args, "max_comments", None)
+                        or self.max_comments_per_post
+                    )
+                    comment_depth = (
+                        getattr(cli_args, "comment_depth", None)
+                        if getattr(cli_args, "comment_depth", None) is not None
+                        else self.max_comment_depth
+                    )
+                    comments = self.fetch_comments_for_posts(
+                        data,
+                        max_comments=max_comments,
+                        max_depth=comment_depth,
+                    )
+                    comment_output_path = self._make_comments_output_path(query)
 
         except KeyboardInterrupt:
             print("\n⚠ 用户中断操作")
@@ -1537,12 +1670,19 @@ class SeleniumScraper:
             else:
                 self.export_posts_csv(data, output_path)
 
+        if comment_output_path:
+            self.export_comments_csv(comments, comment_output_path)
+
+        displayed_output = output_path
+        if comment_output_path:
+            displayed_output = f"{output_path}\n{' '*12}+ {comment_output_path}"
+
         print_summary(
             mode=mode,
             query=query,
             requested=getattr(cli_args, "count", 1),
             actual=len(data),
-            output_path=output_path,
+            output_path=displayed_output,
             skipped=self.skipped_count,
         )
 
@@ -1576,12 +1716,19 @@ def generate_config(output_path="config.json"):
         },
         "filter": {
             "xinjiang_only": True,
+            "strict_china_context": True,
         },
         "advanced_search": {
             "enabled": True,
             "any_words": list(DEFAULT_ADVANCED_SEARCH_WORDS),
             "since": DEFAULT_ARCHIVE_SINCE,
             "until": DEFAULT_ARCHIVE_UNTIL,
+        },
+        "comments": {
+            "enabled": True,
+            "directory": "comments",
+            "max_per_post": 1000,
+            "max_depth": 0,
         },
     }
 
@@ -1654,6 +1801,17 @@ def main():
     timeline_parser.add_argument("--count", type=int, default=20, help="获取推文数量 (默认: 20)")
     timeline_parser.add_argument("--since", help="起始日期 YYYY-MM-DD")
     timeline_parser.add_argument("--until", help="截止日期 YYYY-MM-DD")
+    timeline_parser.add_argument(
+        "--comments", action=argparse.BooleanOptionalAction, default=None,
+        help="是否自动进入有回复的帖子并抓取实际评论（默认由配置决定）",
+    )
+    timeline_parser.add_argument(
+        "--max-comments", type=int, help="每条帖子最多抓取多少条可见评论"
+    )
+    timeline_parser.add_argument(
+        "--comment-depth", type=int, choices=range(0, 4),
+        help="评论递归深度：0=仅直接评论，1-3=包含子评论",
+    )
     timeline_parser.add_argument("-o", "--output", help="输出文件路径")
 
     # ---- search ----
@@ -1685,7 +1843,18 @@ def main():
         "--any-words",
         nargs="+",
         metavar="WORD",
-        help='“Any of these words” 关键词列表 (默认: Xinjiang 维吾尔 新疆 Uyghur)',
+        help='“Any of these words” 关键词列表（默认含 Uyghur/Uighur 与 East Turkistan 等变体）',
+    )
+    account_search_parser.add_argument(
+        "--comments", action=argparse.BooleanOptionalAction, default=None,
+        help="是否自动进入有回复的帖子并抓取实际评论（默认由配置决定）",
+    )
+    account_search_parser.add_argument(
+        "--max-comments", type=int, help="每条帖子最多抓取多少条可见评论"
+    )
+    account_search_parser.add_argument(
+        "--comment-depth", type=int, choices=range(0, 4),
+        help="评论递归深度：0=仅直接评论，1-3=包含子评论",
     )
     account_search_parser.add_argument("-o", "--output", help="输出文件路径")
 
