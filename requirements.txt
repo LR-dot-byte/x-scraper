@@ -1,1 +1,18 @@
-selenium>=4.6.0
+# 爬虫与浏览器自动化
+selenium>=4.28.0
+undetected-chromedriver>=3.5.5
+
+# 数据读取、清洗与数值计算
+pandas>=2.2.3
+numpy>=2.1.3
+
+# K-means聚类与统计分析
+scikit-learn>=1.6.1
+scipy>=1.14.1
+
+# 网络分析
+networkx>=3.1
+
+# 统计图表与结果可视化
+matplotlib>=3.9.2
+seaborn>=0.13.2

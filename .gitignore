@@ -3,4 +3,6 @@ __pycache__/
 x_output/
 x_cookies*.json
 config.json
+archive/
+*.bak
 .DS_Store

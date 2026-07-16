@@ -209,6 +209,28 @@ class CommentAttributionTests(unittest.TestCase):
         self.assertFalse(x_scraper.SeleniumScraper._is_direct_reply(recommendation, "target"))
         self.assertFalse(x_scraper.SeleniumScraper._is_direct_reply(missing, "target"))
 
+    def test_selects_thread_context_and_replies_until_recommendations(self):
+        candidates = [
+            {"id": "10000", "author_handle": "context_owner"},
+            {"id": "10001", "author_handle": "owner"},
+            {"id": "10002", "author_handle": "reply_one", "reply_to_handles": "owner"},
+            {"id": "10003", "author_handle": "reply_two", "reply_to_handles": "reply_one"},
+            {"id": "10004", "author_handle": "visible_in_thread", "reply_to_handles": ""},
+            {"id": "10005", "author_handle": "suggested", "is_recommendation": True},
+            {"id": "10006", "author_handle": "suggested_two"},
+        ]
+        selected = x_scraper.SeleniumScraper._select_conversation_items(
+            candidates, "10001", "owner", max_items=20
+        )
+        self.assertEqual(
+            [item["id"] for item in selected],
+            ["10000", "10002", "10003", "10004"],
+        )
+        self.assertEqual(selected[0]["thread_relation"], "context")
+        self.assertEqual(selected[1]["thread_relation"], "direct_reply")
+        self.assertEqual(selected[2]["thread_relation"], "nested_reply")
+        self.assertEqual(selected[3]["thread_relation"], "thread_item")
+
     def test_comment_csv_has_requested_columns_in_order(self):
         scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
         data = [{
@@ -216,6 +238,8 @@ class CommentAttributionTests(unittest.TestCase):
             "author_handle": "reply_user",
             "created_at": "2025-01-02T03:04:00Z",
             "text": "comment text",
+            "id": "90001",
+            "tweet_url": "https://x.com/reply_user/status/90001",
             "reply_to_handles": "post_owner",
             "parent_tweet_author": "post_owner",
         }]
@@ -227,11 +251,16 @@ class CommentAttributionTests(unittest.TestCase):
                 rows = list(reader)
             self.assertEqual(
                 reader.fieldnames,
-                ["账号名", "ID名", "时间", "文本", "回复者ID"],
+                ["序号", "account", "tweet_id", "link", "time", "text", "贴主ID"],
             )
+            self.assertEqual(rows[0]["序号"], "1")
+            self.assertEqual(rows[0]["account"], "Reply User")
             # @ 开头的外部文本会加单引号，防止 Excel 公式注入。
-            self.assertEqual(rows[0]["ID名"], "'@reply_user")
-            self.assertEqual(rows[0]["回复者ID"], "'@post_owner")
+            self.assertEqual(rows[0]["tweet_id"], "'@reply_user")
+            self.assertEqual(rows[0]["link"], "https://x.com/reply_user/status/90001")
+            self.assertEqual(rows[0]["time"], "2025.1.2 11:04")
+            self.assertEqual(rows[0]["text"], "comment text")
+            self.assertEqual(rows[0]["贴主ID"], "'@post_owner")
 
     def test_actual_comment_count_is_written_to_post_csv(self):
         scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
@@ -250,6 +279,24 @@ class CommentAttributionTests(unittest.TestCase):
                 row = next(csv.DictReader(f))
             self.assertEqual(row["reply"], "12")
             self.assertEqual(row["评论条数"], "3")
+
+    def test_empty_post_csv_keeps_fixed_header(self):
+        scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "empty_posts.csv"
+            scraper.export_posts_csv([], str(output))
+            with output.open(encoding="utf-8-sig", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+            self.assertEqual(
+                reader.fieldnames,
+                [
+                    "ID", "name", "Following", "Followers", "time", "text",
+                    "translation", "tag", "reply", "repost", "likes", "views",
+                    "vedios/photos", "评论条数",
+                ],
+            )
+            self.assertEqual(rows, [])
 
     def test_only_posts_with_reported_replies_open_details(self):
         scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)

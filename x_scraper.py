@@ -263,6 +263,7 @@ class SeleniumScraper:
       if (factors[unit]) value *= factors[unit];
       return Number.isFinite(value) ? Math.round(value) : 0;
     };
+    const recommendationPattern = /Discover more|More Tweets|Explore more|更多推文|探索更多|你可能喜欢|推荐内容/i;
     const articles = document.querySelectorAll('article[data-testid="tweet"]');
     articles.forEach((article, idx) => {
       try {
@@ -379,6 +380,28 @@ class SeleniumScraper:
         let replyTo = '';
         if (replyLabel) replyTo = replyLabel[0].trim().split('\n').slice(0, 4).join(' ');
 
+        // --- 对话区边界 ---
+        // X 会在帖子详情页尾部插入“Discover more / 更多推文”。
+        // 只要当前 article 之前的同级 cell 出现该标题，就标记为推荐区内容。
+        let isRecommendation = false;
+        const cell = article.closest('[data-testid="cellInnerDiv"]');
+        if (cell && cell.parentElement) {
+          let sibling = cell.previousElementSibling;
+          while (sibling) {
+            const headings = sibling.querySelectorAll('[role="heading"], h1, h2, h3');
+            for (const heading of headings) {
+              if (recommendationPattern.test(heading.innerText || '')) {
+                isRecommendation = true;
+                break;
+              }
+            }
+            if (isRecommendation) break;
+            sibling = sibling.previousElementSibling;
+          }
+        }
+        const socialText = socialContext ? (socialContext.innerText || '') : '';
+        const isPromoted = /Promoted|推广/i.test(socialText);
+
         // --- 推文深度（0=主帖, 1=一级评论, 2=二级评论...）---
         let depth = 0;
         // 通过检查是否在嵌套的线程容器中判断深度
@@ -415,6 +438,8 @@ class SeleniumScraper:
           reply_to: replyTo,
           reply_to_handles: replyToHandles.map(h => h.slice(1)).join(','),
           tweet_url: tweetUrl,
+          is_recommendation: isRecommendation,
+          is_promoted: isPromoted,
         });
       } catch(e) {}
     });
@@ -461,7 +486,7 @@ class SeleniumScraper:
             1, min(int(comments_cfg.get("max_per_post", 1000)), 1000)
         )
         self.max_comment_depth = max(
-            0, min(int(comments_cfg.get("max_depth", 0)), 3)
+            0, min(int(comments_cfg.get("max_depth", 2)), 3)
         )
         comments_directory = str(comments_cfg.get("directory", "comments")).strip()
         if not comments_directory:
@@ -1092,6 +1117,51 @@ class SeleniumScraper:
         }
         return expected in reply_handles
 
+    @staticmethod
+    def _select_conversation_items(candidates, target_id, target_author, max_items=1000):
+        """从帖子详情页中保留对话链前后文、直接回复和子回复。
+
+        X 详情页中目标帖之前的帖子是对话前文，目标帖之后、
+        “Discover more / 更多推文”边界之前的内容视为回复区。
+        """
+        target_id = str(target_id or "")
+        ordered = [item for item in candidates if item and item.get("id")]
+        target_index = next(
+            (index for index, item in enumerate(ordered) if str(item.get("id")) == target_id),
+            None,
+        )
+        if target_index is None:
+            return []
+
+        expected = str(target_author or "").strip().lstrip("@").casefold()
+        selected = []
+        for index, item in enumerate(ordered):
+            if str(item.get("id")) == target_id or item.get("is_promoted"):
+                continue
+            if index > target_index and item.get("is_recommendation"):
+                break
+            if index < target_index and item.get("is_recommendation"):
+                continue
+
+            copy = dict(item)
+            reply_handles = {
+                handle.strip().lstrip("@").casefold()
+                for handle in copy.get("reply_to_handles", "").split(",")
+                if handle.strip()
+            }
+            if index < target_index:
+                copy["thread_relation"] = "context"
+            elif expected and expected in reply_handles:
+                copy["thread_relation"] = "direct_reply"
+            elif reply_handles:
+                copy["thread_relation"] = "nested_reply"
+            else:
+                copy["thread_relation"] = "thread_item"
+            selected.append(copy)
+            if len(selected) >= max_items:
+                break
+        return selected
+
     def _fetch_comments_for_tweet(self, tweet_url, max_comments=20, max_depth=1,
                                   current_depth=0, _visited=None):
         """获取指定推文的所有评论及子评论（递归）。
@@ -1148,8 +1218,8 @@ class SeleniumScraper:
                 print(f"  ⚠ 无法确定目标推文作者，放弃评论归属")
                 return all_comments
 
-            # 页面会混入上下文和推荐帖。多扫描一些候选项，但只保留
-            # reply_to_handles 明确包含目标作者的直接回复。
+            # 多扫描一些候选项，保留目标帖的对话链前后文、
+            # 直接回复及二、三级回复，并在推荐区标题处停止。
             candidate_target = max(max_comments * 3, max_comments + 5)
             candidates = self._scroll_to_load(
                 candidate_target,
@@ -1157,25 +1227,22 @@ class SeleniumScraper:
                 max_scrolls=min(80, max(20, max_comments * 2)),
             )
 
-            unverified = 0
-            for c in candidates:
-                if c.get("id") == target_id:
-                    continue
-                if not self._is_direct_reply(c, parent_author):
-                    unverified += 1
-                    continue
+            conversation_items = self._select_conversation_items(
+                candidates, target_id, parent_author, max_items=max_comments
+            )
+            for c in conversation_items:
                 c["depth"] = current_depth
                 c["parent_comment_id"] = target_id if current_depth > 0 else ""
                 all_comments.append(c)
-                if len(all_comments) >= max_comments:
-                    break
 
-            if unverified:
-                print(f"    精确度过滤：排除 {unverified} 条无法证明归属的上下文/推荐帖")
+            print(f"    对话链过滤：保留 {len(conversation_items)} 条前后文/回复，排除推广和推荐区")
 
             # 递归获取子评论
             if current_depth < max_depth:
-                direct_comments = list(all_comments)
+                direct_comments = [
+                    item for item in all_comments
+                    if item.get("thread_relation") != "context"
+                ]
                 for i, comment in enumerate(direct_comments):
                     if comment.get("reply_count", 0) > 0:
                         sub_url = comment.get("tweet_url", "")
@@ -1239,7 +1306,8 @@ class SeleniumScraper:
             actual_for_post = []
             for comment in comments:
                 comment_id = comment.get("id", "")
-                if not comment_id or comment_id in seen_comment_ids:
+                if (not comment_id or comment_id == post.get("id", "")
+                        or comment_id in seen_comment_ids):
                     continue
                 seen_comment_ids.add(comment_id)
                 comment["parent_tweet_id"] = post.get("id", "")
@@ -1257,8 +1325,8 @@ class SeleniumScraper:
             post["actual_comment_count"] = len(actual_for_post)
             all_comments.extend(actual_for_post)
             print(
-                f"    → 页面标示 {reported_count} 条，实际抓到并验证 "
-                f"{len(actual_for_post)} 条可见评论"
+                f"    → 页面标示 {reported_count} 条，实际保留 "
+                f"{len(actual_for_post)} 条对话链前后文/回复"
             )
 
         print(f"✓ 评论核对完成：共抓取 {len(all_comments)} 条唯一评论")
@@ -1399,10 +1467,6 @@ class SeleniumScraper:
         列: ID, name, Following, Followers, time, text, translation,
             tag, reply, repost, likes, views, vedios/photos, 评论条数
         """
-        if not data:
-            print("⚠ 无帖子数据可输出")
-            return
-
         fieldnames = [
             "ID", "name", "Following", "Followers", "time", "text",
             "translation", "tag", "reply", "repost", "likes", "views",
@@ -1460,24 +1524,23 @@ class SeleniumScraper:
                 for row in rows
             ])
 
-        print(f"\n✓ 帖子结果已保存到: {output_path}")
+        print(f"\n✓ 帖子结果已保存到: {output_path}（{len(rows)} 条）")
 
     def export_comments_csv(self, data, output_path):
-        """按固定顺序导出评论：账号名、ID名、时间、文本、回复者ID。"""
-        fieldnames = ["账号名", "ID名", "时间", "文本", "回复者ID"]
+        """按研究表格的固定顺序导出对话链内容。"""
+        fieldnames = ["序号", "account", "tweet_id", "link", "time", "text", "贴主ID"]
 
         rows = []
-        for d in data:
-            reply_target = (
-                d.get("reply_target_handle", "")
-                or d.get("parent_tweet_author", "")
-            )
+        for index, d in enumerate(data, start=1):
+            post_owner = d.get("parent_tweet_author", "")
             rows.append({
-                "账号名": d.get("author_name", ""),
-                "ID名": self._ensure_at(d.get("author_handle", "")),
-                "时间": self._fmt_time_comments(d.get("created_at", "")),
-                "文本": d.get("text", ""),
-                "回复者ID": self._ensure_at(reply_target),
+                "序号": index,
+                "account": d.get("author_name", ""),
+                "tweet_id": self._ensure_at(d.get("author_handle", "")),
+                "link": d.get("tweet_url", ""),
+                "time": self._fmt_time_comments(d.get("created_at", "")),
+                "text": d.get("text", ""),
+                "贴主ID": self._ensure_at(post_owner),
             })
 
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -1728,7 +1791,7 @@ def generate_config(output_path="config.json"):
             "enabled": True,
             "directory": "comments",
             "max_per_post": 1000,
-            "max_depth": 0,
+            "max_depth": 2,
         },
     }
 
