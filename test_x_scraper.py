@@ -24,6 +24,74 @@ class FilterTests(unittest.TestCase):
     def test_english_keyword_uses_word_boundaries(self):
         self.assertFalse(x_scraper.matches_xinjiang("prefixuhrpsuffix"))
 
+    def test_custom_any_words_filter(self):
+        words = ["Xinjiang", "维吾尔", "新疆", "Uyghur"]
+        self.assertTrue(x_scraper.matches_any_words("News about 新疆", words))
+        self.assertFalse(x_scraper.matches_any_words("Unrelated regional news", words))
+
+
+class AdvancedSearchTests(unittest.TestCase):
+    def test_builds_account_date_and_any_words_query(self):
+        query = x_scraper.SeleniumScraper.build_account_advanced_query(
+            "@example",
+            ["Xinjiang", "维吾尔", "新疆", "Uyghur"],
+            "2024-01-01",
+            "2025-12-31",
+        )
+        self.assertEqual(
+            query,
+            '("Xinjiang" OR "维吾尔" OR "新疆" OR "Uyghur") '
+            "from:example since:2024-01-01 until:2026-01-01",
+        )
+
+    def test_until_date_is_inclusive(self):
+        query = x_scraper.SeleniumScraper.build_account_advanced_query(
+            "example", ["新疆"], "2025-01-01", "2025-01-01"
+        )
+        self.assertIn("until:2025-01-02", query)
+
+    def test_normalizes_and_deduplicates_words(self):
+        words = x_scraper.SeleniumScraper._normalize_any_words(
+            [" Xinjiang ", "xinjiang", "新疆", ""]
+        )
+        self.assertEqual(words, ["Xinjiang", "新疆"])
+
+    def test_rejects_empty_word_list(self):
+        with self.assertRaises(ValueError):
+            x_scraper.SeleniumScraper._normalize_any_words([])
+
+    def test_account_search_navigates_to_latest_advanced_results(self):
+        scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
+        scraper.advanced_search_words = list(x_scraper.DEFAULT_ADVANCED_SEARCH_WORDS)
+        scraper.got_count = 0
+        scraper.rate_limiter = type("Limiter", (), {"wait": lambda self, label="": None})()
+        visited = {}
+        scraper._navigate = lambda url, label="": visited.update(url=url, label=label) or True
+        scraper._wait_for_page_ready = lambda: None
+        scraper._scroll_to_load = lambda count, **kwargs: visited.update(
+            scroll_count=count, scroll_kwargs=kwargs
+        ) or []
+
+        result = scraper.fetch_account_advanced_search(
+            "example",
+            count=25,
+            since_date="2024-01-01",
+            until_date="2025-12-31",
+            load_profile=False,
+        )
+
+        self.assertEqual(result, [])
+        self.assertIn("https://x.com/search?q=", visited["url"])
+        self.assertIn("from%3Aexample", visited["url"])
+        self.assertIn("since%3A2024-01-01", visited["url"])
+        self.assertIn("until%3A2026-01-01", visited["url"])
+        self.assertTrue(visited["url"].endswith("&src=typed_query&f=live"))
+        self.assertEqual(visited["scroll_count"], 25)
+        self.assertEqual(
+            visited["scroll_kwargs"]["any_words_filter"],
+            list(x_scraper.DEFAULT_ADVANCED_SEARCH_WORDS),
+        )
+
 
 class CsvSafetyTests(unittest.TestCase):
     def test_formula_prefixes_are_escaped(self):
@@ -78,6 +146,22 @@ class ScrollFilteringTests(unittest.TestCase):
         scraper = self.make_scraper([items])
         result = scraper._scroll_to_load(1, expected_author="target")
         self.assertEqual([item["id"] for item in result], ["10001"])
+
+    def test_advanced_search_results_are_verified_locally(self):
+        items = [
+            {"id": "10001", "dom_index": 0, "created_at": "2025-01-01T00:00:00Z",
+             "text": "Unrelated recommendation", "author_handle": "target"},
+            {"id": "10002", "dom_index": 1, "created_at": "2025-01-01T00:00:00Z",
+             "text": "Xinjiang update", "author_handle": "target"},
+        ]
+        scraper = self.make_scraper([items])
+        result = scraper._scroll_to_load(
+            2,
+            max_scrolls=1,
+            expected_author="target",
+            any_words_filter=["Xinjiang", "维吾尔", "新疆", "Uyghur"],
+        )
+        self.assertEqual([item["id"] for item in result], ["10002"])
 
 
 class InputValidationTests(unittest.TestCase):
