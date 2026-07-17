@@ -1465,12 +1465,12 @@ class SeleniumScraper:
         """导出帖子 CSV，列格式与 24-25年知情代理人涉疆数据.xlsx 一致。
 
         列: ID, name, Following, Followers, time, text, translation,
-            tag, reply, repost, likes, views, vedios/photos, 评论条数
+            tag, reply, repost, likes, views, vedios/photos, 评论条数, 原始链接
         """
         fieldnames = [
             "ID", "name", "Following", "Followers", "time", "text",
             "translation", "tag", "reply", "repost", "likes", "views",
-            "vedios/photos", "评论条数",
+            "vedios/photos", "评论条数", "原始链接",
         ]
 
         rows = []
@@ -1514,6 +1514,7 @@ class SeleniumScraper:
                 "评论条数": d.get(
                     "actual_comment_count", d.get("reply_count", 0)
                 ),
+                "原始链接": d.get("tweet_url", ""),
             })
 
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:

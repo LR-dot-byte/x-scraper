@@ -269,6 +269,7 @@ class CommentAttributionTests(unittest.TestCase):
             "author_handle": "owner",
             "created_at": "2025-01-02T03:04:00Z",
             "text": "Xinjiang update",
+            "tweet_url": "https://x.com/owner/status/90002",
             "reply_count": 12,
             "actual_comment_count": 3,
         }]
@@ -279,6 +280,9 @@ class CommentAttributionTests(unittest.TestCase):
                 row = next(csv.DictReader(f))
             self.assertEqual(row["reply"], "12")
             self.assertEqual(row["评论条数"], "3")
+            self.assertEqual(
+                row["原始链接"], "https://x.com/owner/status/90002"
+            )
 
     def test_empty_post_csv_keeps_fixed_header(self):
         scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
@@ -293,7 +297,7 @@ class CommentAttributionTests(unittest.TestCase):
                 [
                     "ID", "name", "Following", "Followers", "time", "text",
                     "translation", "tag", "reply", "repost", "likes", "views",
-                    "vedios/photos", "评论条数",
+                    "vedios/photos", "评论条数", "原始链接",
                 ],
             )
             self.assertEqual(rows, [])

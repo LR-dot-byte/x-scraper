@@ -126,7 +126,7 @@ python3 x_scraper.py report UHRP_Chinese --timeline-scan
 `序号、account、tweet_id、link、time、text、贴主ID`
 
 帖子 CSV 的 `reply` 保留 X 页面展示的回复数，`评论条数`记录实际抓取并验证的
-唯一评论数。可以临时关闭或调整抓取量：
+唯一评论数，`原始链接`保留每条帖文的 X 原帖 URL。可以临时关闭或调整抓取量：
 
 ```bash
 python3 x_scraper.py account-search UHRP_Chinese --no-comments
