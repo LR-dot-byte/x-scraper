@@ -14,6 +14,29 @@ class FakeDriver:
         self.scroll_calls.append((script, args))
 
 
+class FakeShowMoreElement:
+    def __init__(self, element_id, displayed=True):
+        self.id = element_id
+        self._displayed = displayed
+
+    def is_displayed(self):
+        return self._displayed
+
+
+class FakeShowMoreDriver:
+    def __init__(self, element_batches):
+        self.element_batches = iter(element_batches)
+        self.find_calls = []
+        self.clicked_ids = []
+
+    def find_elements(self, by, selector):
+        self.find_calls.append((by, selector))
+        return next(self.element_batches, [])
+
+    def execute_script(self, script, element):
+        self.clicked_ids.append(element.id)
+
+
 class FilterTests(unittest.TestCase):
     def test_direct_xinjiang_keywords_match_without_more_context(self):
         self.assertTrue(x_scraper.matches_xinjiang("这是一则新疆相关消息"))
@@ -121,6 +144,25 @@ class CsvSafetyTests(unittest.TestCase):
         self.assertEqual(x_scraper.sanitize_csv_value("普通推文"), "普通推文")
 
 
+class TweetTextExtractionTests(unittest.TestCase):
+    def test_extractor_walks_all_text_nodes_and_preserves_structure(self):
+        script = x_scraper.SeleniumScraper._EXTRACT_TWEETS_JS
+
+        self.assertIn("node.nodeType === Node.TEXT_NODE", script)
+        self.assertIn("element.childNodes || []", script)
+        self.assertIn("tagName === 'BR'", script)
+        self.assertIn("['DIV', 'P', 'LI'].includes(tagName)", script)
+        self.assertNotIn("textEl.innerText.trim()", script)
+
+    def test_extractor_preserves_image_emoji_and_text_after_it(self):
+        script = x_scraper.SeleniumScraper._EXTRACT_TWEETS_JS
+
+        self.assertIn("tagName === 'IMG'", script)
+        self.assertIn("element.getAttribute('alt')", script)
+        self.assertIn("element.getAttribute('aria-label')", script)
+        self.assertIn("Array.from(element.childNodes || []).forEach(walk)", script)
+
+
 class ScrollFilteringTests(unittest.TestCase):
     def make_scraper(self, batches):
         scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
@@ -132,6 +174,44 @@ class ScrollFilteringTests(unittest.TestCase):
         scraper._batches = iter(batches)
         scraper._extract_tweets_batch = lambda: next(scraper._batches, [])
         return scraper
+
+    def test_expands_tweet_text_before_extracting_batch(self):
+        scraper = self.make_scraper([[
+            {"id": "10001", "dom_index": 0,
+             "created_at": "2025-01-01T00:00:00Z",
+             "text": "Xinjiang full text", "author_handle": "target"},
+        ]])
+        events = []
+        original_extract = scraper._extract_tweets_batch
+        scraper._expand_visible_tweet_texts = lambda: events.append("expand") or 1
+        scraper._extract_tweets_batch = lambda: events.append("extract") or original_extract()
+
+        result = scraper._scroll_to_load(1, expected_author="target")
+
+        self.assertEqual([item["id"] for item in result], ["10001"])
+        self.assertEqual(events[:2], ["expand", "extract"])
+
+    def test_show_more_expansion_requeries_dom_after_each_click(self):
+        first = FakeShowMoreElement("first")
+        second = FakeShowMoreElement("second")
+        driver = FakeShowMoreDriver([
+            [first, second],
+            [second],
+            [],
+        ])
+        scraper = x_scraper.SeleniumScraper.__new__(x_scraper.SeleniumScraper)
+        scraper.driver = driver
+        scraper.scroll_pause = 0
+
+        expanded = scraper._expand_visible_tweet_texts(max_expansions=10)
+
+        self.assertEqual(expanded, 2)
+        self.assertEqual(driver.clicked_ids, ["first", "second"])
+        self.assertEqual(len(driver.find_calls), 3)
+        self.assertTrue(all(
+            "tweet-text-show-more-link" in selector
+            for _, selector in driver.find_calls
+        ))
 
     def test_old_irrelevant_tweets_still_trigger_date_stop(self):
         old_items = [

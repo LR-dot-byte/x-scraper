@@ -248,10 +248,74 @@ class SeleniumScraper:
     """
 
     TWEET_SELECTOR = 'article[data-testid="tweet"]'
+    TWEET_TEXT_SHOW_MORE_SELECTOR = (
+        'article[data-testid="tweet"] '
+        'button[data-testid="tweet-text-show-more-link"], '
+        'article[data-testid="tweet"] '
+        '[role="button"][data-testid="tweet-text-show-more-link"]'
+    )
 
     # ---- JS 脚本：在浏览器端原子提取所有可见推文的结构化数据 ----
     _EXTRACT_TWEETS_JS = r"""
     const results = [];
+    const extractTweetText = (root) => {
+      if (!root) return '';
+
+      const chunks = [];
+      const appendText = (value) => {
+        if (value) chunks.push(String(value));
+      };
+      const appendNewline = () => {
+        if (chunks.length && !String(chunks[chunks.length - 1]).endsWith('\n')) {
+          chunks.push('\n');
+        }
+      };
+      const walk = (node) => {
+        if (!node) return;
+        if (node.nodeType === Node.TEXT_NODE) {
+          appendText(node.nodeValue || '');
+          return;
+        }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+
+        const element = node;
+        if (element.hidden) return;
+
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden') return;
+
+        const tagName = element.tagName.toUpperCase();
+        if (tagName === 'BR') {
+          appendNewline();
+          return;
+        }
+        if (tagName === 'IMG') {
+          // X may render emoji as images. innerText/textContent do not reliably
+          // include their visible character, so preserve the accessible label.
+          appendText(
+            element.getAttribute('alt') ||
+            element.getAttribute('aria-label') ||
+            ''
+          );
+          return;
+        }
+        if (element.getAttribute('aria-hidden') === 'true') return;
+
+        const isBlock = ['DIV', 'P', 'LI'].includes(tagName);
+        if (isBlock) appendNewline();
+        Array.from(element.childNodes || []).forEach(walk);
+        if (isBlock) appendNewline();
+      };
+
+      walk(root);
+      return chunks.join('')
+        .replace(/\r\n?/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n[ \t]+/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+    };
     const parseCompactNumber = (raw) => {
       if (!raw) return 0;
       const cleaned = String(raw).replace(/,/g, '').trim();
@@ -284,9 +348,9 @@ class SeleniumScraper:
         }
         if (!tweetId) return;
 
-        // --- 文本（使用 innerText 获取完整文本，保留换行）---
+        // --- 文本（遍历完整 DOM，保留分段、换行和图片表情）---
         const textEl = article.querySelector('[data-testid="tweetText"]');
-        const text = textEl ? textEl.innerText.trim() : '';
+        const text = extractTweetText(textEl);
 
         // --- 时间 ---
         const timeEl = article.querySelector('time');
@@ -772,6 +836,53 @@ class SeleniumScraper:
             print(f"  ⚠ JS 批量提取推文失败: {e}")
             return []
 
+    def _expand_visible_tweet_texts(self, max_expansions=100):
+        """在提取前展开当前可见帖文中被折叠的正文。
+
+        只点击 X 专用于帖文正文的 data-testid 控件。每次点击后重新查询 DOM，
+        避免继续使用 X 虚拟列表中已经失效的元素引用；页面其他“更多”按钮不处理。
+        """
+        expanded = 0
+        attempted = set()
+
+        for _ in range(max(0, int(max_expansions))):
+            try:
+                controls = self.driver.find_elements(
+                    By.CSS_SELECTOR, self.TWEET_TEXT_SHOW_MORE_SELECTOR
+                )
+            except Exception:
+                return expanded
+
+            control = None
+            for candidate in controls:
+                key = getattr(candidate, "id", None) or f"object-{id(candidate)}"
+                if key in attempted:
+                    continue
+                attempted.add(key)
+                try:
+                    if not candidate.is_displayed():
+                        continue
+                except Exception:
+                    continue
+                control = candidate
+                break
+
+            if control is None:
+                break
+
+            try:
+                self.driver.execute_script("arguments[0].click();", control)
+                expanded += 1
+                pause = max(0.0, float(getattr(self, "scroll_pause", 0.3)))
+                time.sleep(min(pause, 0.5))
+            except Exception:
+                # 点击可能立即替换整个帖文节点；下一轮重新查询，不复用旧元素。
+                continue
+
+        if expanded:
+            print(f"  已展开 {expanded} 条折叠帖文正文")
+        return expanded
+
     # ----- 滚动加载 -----
 
     def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
@@ -811,6 +922,7 @@ class SeleniumScraper:
         old_date_streak = 0
 
         for scroll_num in range(max_scrolls):
+            self._expand_visible_tweet_texts()
             batch = sorted(
                 self._extract_tweets_batch(),
                 key=lambda item: item.get("dom_index", 0) if item else 0,
@@ -967,6 +1079,7 @@ class SeleniumScraper:
             print(f"  ⚠ 推文加载超时，可能不存在或无权限访问")
             return []
 
+        self._expand_visible_tweet_texts()
         batch = self._extract_tweets_batch()
         if not batch:
             print(f"  ✗ 未找到推文元素")
