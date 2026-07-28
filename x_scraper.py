@@ -432,6 +432,17 @@ class SeleniumScraper:
         const mediaCount = article.querySelectorAll(
           '[data-testid="tweetPhoto"], [data-testid="videoPlayer"], video'
         ).length;
+        // Keep direct media references for downstream evidence review.  Profile
+        // avatars are excluded by scoping to the post's own media containers.
+        const mediaUrls = [];
+        for (const img of article.querySelectorAll('[data-testid="tweetPhoto"] img')) {
+          const src = img.getAttribute('src') || img.currentSrc || '';
+          if (src && !mediaUrls.includes(src)) mediaUrls.push(src);
+        }
+        for (const video of article.querySelectorAll('[data-testid="videoPlayer"] video')) {
+          const poster = video.getAttribute('poster') || '';
+          if (poster && !mediaUrls.includes(poster)) mediaUrls.push(poster);
+        }
 
         // --- 是否回复 / 回复对象 ---
         const socialContext = article.querySelector('[data-testid="socialContext"]');
@@ -498,6 +509,7 @@ class SeleniumScraper:
           hashtags: hashtags.join(','),
           urls: urls.slice(0, 5).join('|'),
           media_count: mediaCount,
+          media_urls: mediaUrls.slice(0, 4).join('|'),
           is_reply: isReply,
           reply_to: replyTo,
           reply_to_handles: replyToHandles.map(h => h.slice(1)).join(','),
@@ -885,6 +897,31 @@ class SeleniumScraper:
 
     # ----- 滚动加载 -----
 
+    def _wait_for_initial_tweets_or_empty(self, timeout=12):
+        """等待 X 异步渲染首屏结果，避免把加载中的空 DOM 当作零结果。
+
+        X 的 ``document.readyState`` 先于搜索结果到达；若随即以短间隔
+        滚动，旧逻辑会在数秒内触发“无新推文”早停。这里同时接受明确的
+        空结果提示，因而真实零结果不会被无谓地等待到超时。
+        """
+        empty_markers = ("no results", "没有结果", "未找到结果", "无结果")
+
+        def ready(driver):
+            try:
+                if driver.find_elements(By.CSS_SELECTOR, self.TWEET_SELECTOR):
+                    return True
+                source = (driver.page_source or "").casefold()
+                return any(marker in source for marker in empty_markers)
+            except Exception:
+                return False
+
+        try:
+            WebDriverWait(self.driver, timeout).until(ready)
+            return True
+        except Exception:
+            print("  ⚠ 首屏结果未在等待时间内出现；继续以滚动方式复核")
+            return False
+
     def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
                         since_date=None, until_date=None, keyword_filter=False,
                         expected_author=None, any_words_filter=None,
@@ -910,6 +947,7 @@ class SeleniumScraper:
         if since_date and until_date and since_date > until_date:
             raise ValueError("since_date 不能晚于 until_date")
 
+        self._wait_for_initial_tweets_or_empty()
         collected = []
         local_seen_ids = set()
         stale_count = 0
