@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 x_output/
+data/
+绘图outputs/
+2244313043-李荣-大作业报告.pdf
 x_cookies*.json
 config.json
 archive/
