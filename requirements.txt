@@ -1,3 +1,18 @@
-# X 爬虫运行所需的第三方库
+# X 平台采集与浏览器自动化
 selenium>=4.28.0
 undetected-chromedriver>=3.5.5
+
+# 表格读取、数据清洗与数值计算
+pandas>=2.2.0
+numpy>=1.26.0
+openpyxl>=3.1.2
+
+# 统计分析、聚类与网络分析
+scipy>=1.12.0
+scikit-learn>=1.4.0
+networkx>=3.2.0
+
+# 绘图与图像证据整理
+matplotlib>=3.8.0
+seaborn>=0.13.0
+Pillow>=10.0.0

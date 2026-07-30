@@ -22,7 +22,7 @@ This file provides guidance to Claude Code when working with this repository.
 |---|---|
 | `x_scraper.py` | X平台爬虫主程序 |
 | `test_x_scraper.py` | 不依赖真实浏览器的回归测试 |
-| `requirements.txt` | `x_scraper.py` 实际导入的第三方依赖 |
+| `requirements.txt` | 采集、清洗、分析、绘图和证据整理所需第三方依赖 |
 | `README.md` | 工具安装、运行方法、数据结果和项目导航 |
 | `.gitignore` | Cookie、配置、缓存和输出忽略规则 |
 | `数据采集方法.md` | 历史数据整理、爬虫补采和四维筛选方法 |
@@ -336,7 +336,7 @@ Cookie与密码等价。必须遵循：
 
 ## 逐行注释同步
 
-`注释.py` 必须与 `x_scraper.py` 保持抽象语法树等价。修改爬虫后同步更新逐行注释，并重新生成 `X爬虫代码逐行注释.md`。注释应解释该行在当前语境中的作用，不得改变多行字符串、JavaScript 模板或程序行为。
+`注释.py` 是唯一的逐行注释版，必须与 `x_scraper.py` 保持抽象语法树和有效代码标记等价。修改爬虫后应同步更新该文件。注释必须解释代码在当前语境中的真实作用，不得加入“空行分隔”等无意义说明，也不得改变 shebang、编码声明、多行字符串、JavaScript 模板或程序行为。
 
 ## 修改后验证
 

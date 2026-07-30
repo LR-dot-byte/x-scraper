@@ -1,9 +1,8 @@
-# 本文件依据最终 x_scraper.py 生成，用于逐行解释代码含义；不改变程序行为。
-# 指定脚本的 Python 解释器。
 #!/usr/bin/env python3
-# 声明源码使用 UTF-8 编码。
 # -*- coding: utf-8 -*-
-# 执行当前步骤的业务处理。
+# 上面两行分别指定 Python 解释器和 UTF-8 源码编码。
+# 本文件依据最终 x_scraper.py 生成，用于逐行解释代码含义；不改变程序行为。
+# 下方模块文档字符串说明程序用途、输出格式和基本用法。
 """
 X (Twitter) 帖子爬虫工具
 基于 Selenium + Chrome，模拟真实浏览器操作，抓取推文详情、用户时间线、关键词搜索、评论回复。
@@ -17,7 +16,6 @@ X (Twitter) 帖子爬虫工具
   python3 x_scraper.py config
 """
 
-# 空行，用于分隔相邻代码块。
 
 # 导入本行所需模块或对象。
 import argparse
@@ -44,7 +42,6 @@ from datetime import datetime, timezone, timedelta
 # 导入本行所需模块或对象。
 from urllib.parse import quote_plus, urlparse
 
-# 空行，用于分隔相邻代码块。
 
 # 导入本行所需模块或对象。
 from selenium import webdriver
@@ -57,7 +54,6 @@ from selenium.webdriver.support import expected_conditions as EC
 # 导入本行所需模块或对象。
 from selenium.webdriver.support.ui import WebDriverWait
 
-# 空行，用于分隔相邻代码块。
 
 # 开始可能抛出异常的受保护操作。
 try:
@@ -70,20 +66,14 @@ except ImportError:
     # 设置或更新本行涉及的变量值。
     HAS_UC = False
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
-# 保留原有说明注释。
 # ============================================================
-# 保留原有说明注释。
 #  新疆相关关键词（用于过滤帖子）
-# 保留原有说明注释。
 # ============================================================
 # 设置或更新本行涉及的变量值。
 XINJIANG_DIRECT_KEYWORDS = [
-    # 保留原有说明注释。
     # 地名、地区别称和新疆专属法案：命中即可直接保留。
     # 续写当前数据结构、参数列表或表达式。
     "新疆", "东突", "东突厥", "Xinjiang", "XUAR",
@@ -92,11 +82,9 @@ XINJIANG_DIRECT_KEYWORDS = [
 # 结束上一行开始的数据结构或表达式。
 ]
 
-# 空行，用于分隔相邻代码块。
 
 # 设置或更新本行涉及的变量值。
 UYGHUR_IDENTITY_KEYWORDS = [
-    # 保留原有说明注释。
     # 仅出现族群名称还不够，必须同时具备中国语境和事件语境。
     # 续写当前数据结构、参数列表或表达式。
     "维吾尔", "Uyghur", "Uyghurs", "Uighur", "Uighurs",
@@ -105,7 +93,6 @@ UYGHUR_IDENTITY_KEYWORDS = [
 # 结束上一行开始的数据结构或表达式。
 ]
 
-# 空行，用于分隔相邻代码块。
 
 # 设置或更新本行涉及的变量值。
 CHINA_CONTEXT_KEYWORDS = [
@@ -118,7 +105,6 @@ CHINA_CONTEXT_KEYWORDS = [
 # 结束上一行开始的数据结构或表达式。
 ]
 
-# 空行，用于分隔相邻代码块。
 
 # 设置或更新本行涉及的变量值。
 UYGHUR_EVENT_KEYWORDS = [
@@ -143,9 +129,7 @@ UYGHUR_EVENT_KEYWORDS = [
 # 结束上一行开始的数据结构或表达式。
 ]
 
-# 空行，用于分隔相邻代码块。
 
-# 保留原有说明注释。
 # 对应 X 高级搜索中的 “Any of these words”。
 # 设置或更新本行涉及的变量值。
 DEFAULT_ADVANCED_SEARCH_WORDS = (
@@ -160,11 +144,9 @@ DEFAULT_ARCHIVE_SINCE = "2024-01-01"
 # 设置或更新本行涉及的变量值。
 DEFAULT_ARCHIVE_UNTIL = "2025-12-31"
 
-# 空行，用于分隔相邻代码块。
 
 # 设置或更新本行涉及的变量值。
 XINJIANG_CONTEXT_KEYWORDS = [
-    # 保留原有说明注释。
     # 这些词单独出现不足以证明与新疆相关，只用于辅助分类/调试
     # 续写当前数据结构、参数列表或表达式。
     "genocide", "forced labor", "forced labour",
@@ -183,20 +165,15 @@ XINJIANG_CONTEXT_KEYWORDS = [
 # 结束上一行开始的数据结构或表达式。
 ]
 
-# 空行，用于分隔相邻代码块。
 
-# 保留原有说明注释。
 # ============================================================
-# 保留原有说明注释。
 #  工具函数
-# 保留原有说明注释。
 # ============================================================
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def get_config(config_path="config.json"):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """加载并解析配置文件，返回 dict。"""
     # 根据条件决定后续执行分支。
     if not os.path.isfile(config_path):
@@ -207,7 +184,6 @@ def get_config(config_path="config.json"):
         # 执行当前步骤的业务处理。
         sys.exit(1)
 
-# 空行，用于分隔相邻代码块。
 
     # 开始可能抛出异常的受保护操作。
     try:
@@ -215,7 +191,6 @@ def get_config(config_path="config.json"):
         with open(config_path, "r", encoding="utf-8") as f:
             # 解析或写入 JSON 配置与数据。
             config = json.load(f)
-        # 保留原有说明注释。
         # 使相对路径始终相对于 config.json，而不是当前工作目录。
         # 设置或更新本行涉及的变量值。
         config["_config_dir"] = os.path.dirname(os.path.realpath(config_path))
@@ -228,14 +203,12 @@ def get_config(config_path="config.json"):
         # 执行当前步骤的业务处理。
         sys.exit(1)
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def print_banner():
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """打印程序横幅。"""
     # 输出运行提示、进度或错误信息。
     print("=" * 50)
@@ -248,14 +221,12 @@ def print_banner():
     # 输出运行提示、进度或错误信息。
     print()
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def print_summary(mode, query, requested, actual, output_path, skipped=0):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """打印抓取结果摘要。"""
     # 输出运行提示、进度或错误信息。
     print()
@@ -278,14 +249,12 @@ def print_summary(mode, query, requested, actual, output_path, skipped=0):
     # 输出运行提示、进度或错误信息。
     print("-" * 50)
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def _contains_keyword(text, keyword):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """匹配关键词。英文/数字词使用词边界，避免在更长单词中误命中。"""
     # 使用正则表达式完成匹配或提取。
     escaped = re.escape(unicodedata.normalize("NFKC", keyword).casefold())
@@ -296,14 +265,12 @@ def _contains_keyword(text, keyword):
     # 将本函数的计算结果返回给调用处。
     return escaped in text
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def matches_xinjiang(text):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """严格审核涉疆相关性。
 
     新疆地名/地区别称直接通过；仅出现维吾尔族群名称时，必须同时出现
@@ -324,14 +291,12 @@ def matches_xinjiang(text):
     # 结束上一行开始的数据结构或表达式。
     )
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def matches_any_words(text, words):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """检查文本是否命中给定列表中的任意关键词。"""
     # 根据条件决定后续执行分支。
     if not text:
@@ -342,14 +307,12 @@ def matches_any_words(text, words):
     # 将本函数的计算结果返回给调用处。
     return any(_contains_keyword(normalized, kw) for kw in words)
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def sanitize_csv_value(value):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """防止外部文本被 Excel/LibreOffice 解释为公式。"""
     # 根据条件决定后续执行分支。
     if not isinstance(value, str):
@@ -364,23 +327,17 @@ def sanitize_csv_value(value):
     # 将本函数的计算结果返回给调用处。
     return value
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
-# 保留原有说明注释。
 # ============================================================
-# 保留原有说明注释。
 #  RateLimiter 类 - 统一请求限流控制器
-# 保留原有说明注释。
 # ============================================================
 
-# 空行，用于分隔相邻代码块。
 
 # 定义封装相关状态和方法的类。
 class RateLimiter:
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """统一请求限流器（同步版）
 
     三层节奏控制：
@@ -389,7 +346,6 @@ class RateLimiter:
     3. 异常级 — 触发平台限流后进入冷却期，大幅降低请求频率
     """
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def __init__(self, config):
@@ -408,14 +364,12 @@ class RateLimiter:
         # 读取字典或配置中的对应值。
         self.max_retries = cfg.get("max_retries", 3)
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         self._last_request = 0.0
         # 设置或更新本行涉及的变量值。
         self._request_count = 0
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @property
@@ -424,11 +378,10 @@ class RateLimiter:
         # 将本函数的计算结果返回给调用处。
         return self._request_count
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def wait(self, label="操作"):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """每次操作前调用，自动计算并等待合适间隔。"""
         # 根据条件决定后续执行分支。
         if self._last_request > 0:
@@ -439,7 +392,6 @@ class RateLimiter:
             # 设置或更新本行涉及的变量值。
             required = self.min_interval + jitter
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             if elapsed < required:
@@ -452,18 +404,16 @@ class RateLimiter:
                 # 执行当前步骤的业务处理。
                 time.sleep(delay)
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         self._last_request = time.time()
         # 设置或更新本行涉及的变量值。
         self._request_count += 1
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def batch_pause(self):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """每批次请求后长暂停，模拟人类休息。"""
         # 根据条件决定后续执行分支。
         if self._request_count > 0 and self._request_count % self.batch_size == 0:
@@ -474,11 +424,10 @@ class RateLimiter:
             # 执行当前步骤的业务处理。
             time.sleep(self.long_pause)
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def cooldown(self):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """触发平台限流后的强制冷却。"""
         # 输出运行提示、进度或错误信息。
         print(f"  🚫 触发限流保护，强制冷却 {self.cooldown_seconds}s...")
@@ -487,30 +436,23 @@ class RateLimiter:
         # 设置或更新本行涉及的变量值。
         self._request_count = 0
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
-# 保留原有说明注释。
 # ============================================================
-# 保留原有说明注释。
 #  SeleniumScraper 类
-# 保留原有说明注释。
 # ============================================================
 
-# 空行，用于分隔相邻代码块。
 
 # 定义封装相关状态和方法的类。
 class SeleniumScraper:
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """X (Twitter) 帖子爬虫
 
     使用 Selenium WebDriver 控制 Chrome 浏览器，
     模拟真实用户操作，通过 JS 原子提取页面数据避免 stale element。
     """
 
-# 空行，用于分隔相邻代码块。
 
     # 设置或更新本行涉及的变量值。
     TWEET_SELECTOR = 'article[data-testid="tweet"]'
@@ -527,11 +469,68 @@ class SeleniumScraper:
     # 结束上一行开始的数据结构或表达式。
     )
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- JS 脚本：在浏览器端原子提取所有可见推文的结构化数据 ----
-    # 设置或更新本行涉及的变量值。
+    # 以下说明按脚本执行顺序逐项对应 JavaScript 语句；实际脚本保持原样，避免注释改变浏览器端字符串。
+    # 创建结果数组，集中保存本次页面扫描得到的帖子。
+    # 定义正文提取函数，接收帖文正文的根节点。
+    # 根节点不存在时返回空文本。
+    # 创建文本片段数组，按 DOM 顺序累积正文。
+    # 定义文本追加函数，仅把非空值转换为字符串后写入片段数组。
+    # 定义换行追加函数，仅在末尾不是换行符时补充换行。
+    # 定义递归 DOM 遍历函数；节点不存在时结束当前分支。
+    # 文本节点读取 nodeValue 后结束当前分支。
+    # 非元素节点不参与样式和标签判断。
+    # 跳过 hidden、display:none、visibility:hidden 的不可见元素。
+    # 将标签名转为大写，统一后续标签比较。
+    # BR 标签转换为正文换行。
+    # IMG 标签优先读取 alt、其次读取 aria-label，以保留图片表情。
+    # 跳过 aria-hidden=true 的辅助或装饰元素。
+    # 将 DIV、P、LI 识别为块级内容，并在内容前后补充必要换行。
+    # 按 DOM 顺序递归遍历全部子节点，避免遗漏嵌套文本。
+    # 从正文根节点启动遍历并合并文本片段。
+    # 统一回车换行、不换行空格和换行两侧空白。
+    # 将三个及以上连续换行压缩为两个并清理首尾空白。
+    # 定义互动量缩写解析函数；空值或无法匹配的值返回零。
+    # 删除千位逗号后拆分数值与 K、M、B、万、亿单位。
+    # 按单位倍数还原数值，并以四舍五入整数返回。
+    # 建立中英文推荐区标题的识别规则。
+    # 查询页面全部帖子节点，并按 DOM 顺序逐条处理。
+    # 使用 try 隔离单条帖子异常，避免中断整批提取。
+    # 读取社交语境区域；命中中英文置顶标记时跳过该帖子。
+    # 初始化帖子 ID 与链接，并遍历 /status/ 链接提取稳定 ID。
+    # 将首个有效状态链接规范化为不含查询参数的 x.com 链接。
+    # 无法取得帖子 ID 时跳过该节点，防止生成不可去重记录。
+    # 查询正文节点并调用完整 DOM 遍历函数提取正文。
+    # 查询 time 元素并读取标准 ISO datetime。
+    # 初始化作者显示名和账号名。
+    # 从头像容器 data-testid 中去除固定前缀，得到账号名。
+    # 遍历账号主页链接，从内部 span 提取长度合理的显示名。
+    # 头像容器未提供账号名时，用主页链接中的 handle 补充。
+    # 主要路径未取得显示名时，从第一个有效用户链接执行备用提取。
+    # 仍无显示名但已有账号名时，用账号名作为显示名。
+    # 初始化点赞、转发、回复和浏览量。
+    # 从互动按钮组的 aria-label 中分别匹配中英文互动量。
+    # 调用缩写解析函数还原 K、M、B、万、亿计数。
+    # 从正文提取 Unicode 话题标签并去除井号。
+    # 遍历帖子内 HTTP 链接，排除 X 和 Twitter 站内链接。
+    # 统计图片容器、视频播放器和 video 元素数量。
+    # 遍历帖文图片，保存非空且未重复的 src 或 currentSrc。
+    # 遍历帖文视频，保存非空且未重复的 poster 链接。
+    # 读取社交语境和帖子完整文本，定位正文之前的头部区域。
+    # 仅在头部区域匹配中英文回复标签，避免正文中的 @造成误判。
+    # 提取回复对象账号，并据此设置回复标记和回复说明。
+    # 定位帖子所属虚拟列表单元格，从前序同级节点回溯推荐区标题。
+    # 命中推荐标题后标记推荐区并停止回溯。
+    # 从社交语境文本识别中英文推广标记。
+    # 初始化对话深度，并遍历祖先节点为嵌套线程规则保留入口。
+    # 将本条帖子组装为结构化对象并写入结果数组。
+    # 保存稳定 ID、DOM 序号、单行正文、时间和作者字段。
+    # 保存点赞、转发、回复、引用、浏览量和话题标签。
+    # 最多保留五个外部链接及四个媒体证据链接。
+    # 保存回复对象、规范化链接、推荐区标记和推广标记。
+    # 单条帖子解析失败时跳过该条，继续处理其余节点。
+    # 全部节点处理完成后，将结果数组序列化为 JSON 返回 Python。
     _EXTRACT_TWEETS_JS = r"""
     const results = [];
     const extractTweetText = (root) => {
@@ -798,7 +797,6 @@ class SeleniumScraper:
     return JSON.stringify(results);
     """
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def __init__(self, config):
@@ -807,9 +805,7 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         self.validate_config(config)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 输出目录
         # 读取字典或配置中的对应值。
         self.output_dir = config.get("output", {}).get("directory", "x_output")
@@ -822,16 +818,12 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         os.makedirs(self.output_dir, exist_ok=True)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 限流器
         # 设置或更新本行涉及的变量值。
         self.rate_limiter = RateLimiter(config)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # Selenium 配置
         # 读取字典或配置中的对应值。
         self.selenium_cfg = config.get("selenium", {})
@@ -844,9 +836,7 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         self.scroll_pause = max(0.3, min(float(self.scroll_pause), 5.0))
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # Xinjiang 关键词过滤
         # 读取字典或配置中的对应值。
         filter_cfg = config.get("filter", {})
@@ -869,9 +859,7 @@ class SeleniumScraper:
         # 读取字典或配置中的对应值。
         self.advanced_search_until = advanced_cfg.get("until", DEFAULT_ARCHIVE_UNTIL)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 评论抓取：仅对页面显示有回复的帖子进入详情页，实际可见评论另存目录。
         # 读取字典或配置中的对应值。
         comments_cfg = config.get("comments", {})
@@ -906,9 +894,7 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         os.makedirs(self.comments_dir, exist_ok=True)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 去重 & 计数
         # 设置或更新本行涉及的变量值。
         self.got_count = 0
@@ -917,19 +903,14 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         self.tweet_ids = set()
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # Driver 延迟初始化
         # 调用浏览器驱动完成当前操作。
         self.driver = None
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 配置校验 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def validate_config(self, config):
@@ -940,7 +921,6 @@ class SeleniumScraper:
             # 执行当前步骤的业务处理。
             sys.exit(1)
 
-# 空行，用于分隔相邻代码块。
 
         # 读取字典或配置中的对应值。
         rate_cfg = config.get("rate_limit", {})
@@ -953,7 +933,6 @@ class SeleniumScraper:
             # 主动抛出异常以中止无效流程。
             raise ValueError("rate_limit 配置无效：需要 0 <= min_interval <= max_interval")
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
@@ -968,7 +947,6 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return value
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
@@ -983,7 +961,6 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return value
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
@@ -1004,13 +981,12 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return value
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _normalize_any_words(any_words):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """校验并规范化高级搜索的 “Any of these words” 列表。"""
         # 根据条件决定后续执行分支。
         if any_words is None:
@@ -1021,7 +997,6 @@ class SeleniumScraper:
             # 设置或更新本行涉及的变量值。
             any_words = any_words.split()
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         normalized = []
@@ -1048,7 +1023,6 @@ class SeleniumScraper:
                 # 执行当前步骤的业务处理。
                 seen.add(key)
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if not normalized:
@@ -1061,7 +1035,6 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return normalized
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @classmethod
@@ -1071,7 +1044,7 @@ class SeleniumScraper:
                                      since_date=DEFAULT_ARCHIVE_SINCE,
                                      # 设置或更新本行涉及的变量值。
                                      until_date=DEFAULT_ARCHIVE_UNTIL):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """构造 X 高级搜索查询；until 输入按用户习惯视为包含当日。"""
         # 设置或更新本行涉及的变量值。
         screen_name = cls._validate_screen_name(screen_name)
@@ -1088,13 +1061,11 @@ class SeleniumScraper:
             # 主动抛出异常以中止无效流程。
             raise ValueError("--since 不能晚于 --until")
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         words = cls._normalize_any_words(any_words)
         # 设置或更新本行涉及的变量值。
         quoted_words = " OR ".join(f'"{word}"' for word in words)
-        # 保留原有说明注释。
         # X 的 until: 操作符按次日零点截断。对用户暴露的 --until 保持包含当日语义。
         # 设置或更新本行涉及的变量值。
         until_exclusive = (
@@ -1111,13 +1082,12 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _cst_date_from_iso(iso_value):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """将 X 的 UTC ISO 8601 时间转为中国标准时间日期。"""
         # 根据条件决定后续执行分支。
         if not iso_value:
@@ -1138,21 +1108,17 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return ""
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- WebDriver 初始化 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _init_driver(self):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """创建并配置 Chrome WebDriver。优先使用 undetected-chromedriver。"""
         # 设置或更新本行涉及的变量值。
         options = Options()
 
-# 空行，用于分隔相邻代码块。
 
         # 读取字典或配置中的对应值。
         selenium_cfg = self.config.get("selenium", {})
@@ -1163,7 +1129,6 @@ class SeleniumScraper:
         # 读取字典或配置中的对应值。
         use_uc = selenium_cfg.get("use_undetected", False)
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if use_profile and profile_dir and os.path.isdir(profile_dir):
@@ -1173,21 +1138,17 @@ class SeleniumScraper:
             print(f"✓ 使用已有 Chrome Profile: {profile_dir}")
         # 处理前述条件不成立的情况。
         else:
-            # 保留原有说明注释。
             # 使用真实 Chrome UA；伪装 iPhone Safari 会造成 UA/渲染引擎特征矛盾，
-            # 保留原有说明注释。
             # 并且移动窄屏每屏加载的推文更少。
             # 执行当前步骤的业务处理。
             options.add_argument("--window-size=1280,1000")
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if self.headless:
             # 执行当前步骤的业务处理。
             options.add_argument("--headless=new")
 
-# 空行，用于分隔相邻代码块。
 
         # 执行当前步骤的业务处理。
         options.add_argument("--disable-gpu")
@@ -1204,9 +1165,7 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         })
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 如果用户明确开启，才使用 undetected-chromedriver。
         # 根据条件决定后续执行分支。
         if use_uc and HAS_UC and not use_profile:
@@ -1216,27 +1175,22 @@ class SeleniumScraper:
             self.driver = uc.Chrome(options=options)
         # 处理前述条件不成立的情况。
         else:
-            # 保留原有说明注释。
             # Selenium 4 自带的 Selenium Manager 会复用本地驱动，避免每次调用
-            # 保留原有说明注释。
             # webdriver-manager 检查/下载驱动。
             # 调用浏览器驱动完成当前操作。
             self.driver = webdriver.Chrome(options=options)
 
-# 空行，用于分隔相邻代码块。
 
         # 调用浏览器驱动完成当前操作。
         self.driver.set_page_load_timeout(self.page_timeout)
-        # 保留原有说明注释。
         # 只使用显式等待，避免隐式等待与 WebDriverWait 叠加。
         # 调用浏览器驱动完成当前操作。
         self.driver.implicitly_wait(0)
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _wait_for_page_ready(self, timeout=12):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """等待 DOM 可交互，替代固定时长 sleep。"""
         # 调用浏览器驱动完成当前操作。
         WebDriverWait(self.driver, timeout).until(
@@ -1245,32 +1199,26 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 认证 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def login(self):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """导航到 x.com 并完成认证。"""
         # 执行当前步骤的业务处理。
         self._init_driver()
 
-# 空行，用于分隔相邻代码块。
 
         # 读取字典或配置中的对应值。
         selenium_cfg = self.config.get("selenium", {})
         # 读取字典或配置中的对应值。
         use_profile = selenium_cfg.get("use_existing_profile", False)
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if use_profile:
-            # 保留原有说明注释。
             # 使用已有 Chrome Profile，直接访问 x.com 验证登录态
             # 输出运行提示、进度或错误信息。
             print("正在访问 x.com (使用已有 Profile)...")
@@ -1293,7 +1241,6 @@ class SeleniumScraper:
             # 执行当前步骤的业务处理。
             self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
             # 调用浏览器驱动完成当前操作。
             page_source = self.driver.page_source
@@ -1312,9 +1259,7 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 否则使用 Cookie 注入方式
         # 读取字典或配置中的对应值。
         auth = self.config.get("auth", {})
@@ -1335,9 +1280,7 @@ class SeleniumScraper:
             # 执行当前步骤的业务处理。
             sys.exit(1)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # Cookie 等同于登录凭据，POSIX 系统上自动收紧为仅当前用户可读写。
         # 开始可能抛出异常的受保护操作。
         try:
@@ -1352,7 +1295,6 @@ class SeleniumScraper:
             # 输出运行提示、进度或错误信息。
             print(f"  ⚠ 无法收紧 Cookie 文件权限: {e}")
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"正在加载 Cookie: {cookies_file}")
@@ -1361,9 +1303,7 @@ class SeleniumScraper:
             # 解析或写入 JSON 配置与数据。
             cookies = json.load(f)
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 先访问 x.com 建立域名上下文
         # 输出运行提示、进度或错误信息。
         print("正在访问 x.com ...")
@@ -1390,9 +1330,7 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 注入 Cookie
         # 根据条件决定后续执行分支。
         if isinstance(cookies, dict):
@@ -1419,9 +1357,7 @@ class SeleniumScraper:
                     # 输出运行提示、进度或错误信息。
                     print(f"  ⚠ 添加 Cookie 失败: {e}")
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 刷新页面使 Cookie 生效
         # 输出运行提示、进度或错误信息。
         print("正在刷新验证登录状态...")
@@ -1448,7 +1384,6 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
         # 调用浏览器驱动完成当前操作。
         page_source = self.driver.page_source
@@ -1465,16 +1400,13 @@ class SeleniumScraper:
             # 输出运行提示、进度或错误信息。
             print("✓ Cookie 登录成功")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- JS 批量提取 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _extract_tweets_batch(self):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """通过 JS 在浏览器端原子提取所有可见推文数据，返回 dict 列表。"""
         # 开始可能抛出异常的受保护操作。
         try:
@@ -1493,11 +1425,10 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return []
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _expand_visible_tweet_texts(self, max_expansions=100):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """在提取前展开当前可见帖文中被折叠的正文。
 
         只点击 X 专用于帖文正文的 data-testid 控件。每次点击后重新查询 DOM，
@@ -1508,7 +1439,6 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         attempted = set()
 
-# 空行，用于分隔相邻代码块。
 
         # 遍历集合中的元素并逐项处理。
         for _ in range(max(0, int(max_expansions))):
@@ -1525,7 +1455,6 @@ class SeleniumScraper:
                 # 将本函数的计算结果返回给调用处。
                 return expanded
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             control = None
@@ -1554,14 +1483,12 @@ class SeleniumScraper:
                 # 控制当前循环或占位分支的执行。
                 break
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             if control is None:
                 # 控制当前循环或占位分支的执行。
                 break
 
-# 空行，用于分隔相邻代码块。
 
             # 开始可能抛出异常的受保护操作。
             try:
@@ -1575,12 +1502,10 @@ class SeleniumScraper:
                 time.sleep(min(pause, 0.5))
             # 捕获并处理指定的异常情况。
             except Exception:
-                # 保留原有说明注释。
                 # 点击可能立即替换整个帖文节点；下一轮重新查询，不复用旧元素。
                 # 控制当前循环或占位分支的执行。
                 continue
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if expanded:
@@ -1589,16 +1514,13 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return expanded
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 滚动加载 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _wait_for_initial_tweets_or_empty(self, timeout=12):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """等待 X 异步渲染首屏结果，避免把加载中的空 DOM 当作零结果。
 
         X 的 ``document.readyState`` 先于搜索结果到达；若随即以短间隔
@@ -1608,7 +1530,6 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         empty_markers = ("no results", "没有结果", "未找到结果", "无结果")
 
-# 空行，用于分隔相邻代码块。
 
         # 定义可复用的处理函数。
         def ready(driver):
@@ -1627,7 +1548,6 @@ class SeleniumScraper:
                 # 将本函数的计算结果返回给调用处。
                 return False
 
-# 空行，用于分隔相邻代码块。
 
         # 开始可能抛出异常的受保护操作。
         try:
@@ -1642,7 +1562,6 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return False
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _scroll_to_load(self, target_count, label="推文", max_scrolls=200,
@@ -1652,7 +1571,7 @@ class SeleniumScraper:
                         expected_author=None, any_words_filter=None,
                         # 设置或更新本行涉及的变量值。
                         relevance_audit=False):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """滚动页面加载更多推文。
 
         Args:
@@ -1671,7 +1590,6 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return []
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         since_date = self._validate_date(since_date, "since_date")
@@ -1682,7 +1600,6 @@ class SeleniumScraper:
             # 主动抛出异常以中止无效流程。
             raise ValueError("since_date 不能晚于 until_date")
 
-# 空行，用于分隔相邻代码块。
 
         # 执行当前步骤的业务处理。
         self._wait_for_initial_tweets_or_empty()
@@ -1692,13 +1609,9 @@ class SeleniumScraper:
         local_seen_ids = set()
         # 设置或更新本行涉及的变量值。
         stale_count = 0
-        # 保留原有说明注释。
         # 时间线最上方可能混有置顶推文（顺序与实际发布时间无关），且置顶推文
-        # 保留原有说明注释。
         # 前面还可能夹着不匹配关键词而被跳过的正常推文，因此置顶徽章检测不完全
-        # 保留原有说明注释。
         # 可靠时，仅保护"第一条"不够。这里保守地保护前 N_PINNED_GUARD 条新推文，
-        # 保留原有说明注释。
         # 即使日期早于 since_date 也只跳过、不据此触发提前停止滚动。
         # 设置或更新本行涉及的变量值。
         N_PINNED_GUARD = 3
@@ -1707,7 +1620,6 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         old_date_streak = 0
 
-# 空行，用于分隔相邻代码块。
 
         # 遍历集合中的元素并逐项处理。
         for scroll_num in range(max_scrolls):
@@ -1724,7 +1636,6 @@ class SeleniumScraper:
             # 设置或更新本行涉及的变量值。
             new_seen_this_round = 0
 
-# 空行，用于分隔相邻代码块。
 
             # 遍历集合中的元素并逐项处理。
             for data in batch:
@@ -1741,13 +1652,9 @@ class SeleniumScraper:
                     # 控制当前循环或占位分支的执行。
                     continue
 
-# 空行，用于分隔相邻代码块。
 
-                # 保留原有说明注释。
                 # 标记为已扫描（无论是否匹配关键词），避免同一条推文
-                # 保留原有说明注释。
                 # 在后续每次滚动中被反复重新扫描，导致"是否有新内容"的
-                # 保留原有说明注释。
                 # 判断失真、提前误判为停滞而中断滚动
                 # 执行当前步骤的业务处理。
                 local_seen_ids.add(data["id"])
@@ -1758,11 +1665,8 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 new_tweet_index += 1
 
-# 空行，用于分隔相邻代码块。
 
-                # 保留原有说明注释。
                 # 先做时间过滤。否则旧的不相关推文会在关键词处 continue，
-                # 保留原有说明注释。
                 # 程序就无法及时感知已经翻过 since_date。
                 # 读取字典或配置中的对应值。
                 created = data.get("created_at", "")
@@ -1778,13 +1682,11 @@ class SeleniumScraper:
                 if since_date and created_date < since_date:
                     # 根据条件决定后续执行分支。
                     if is_guarded:
-                        # 保留原有说明注释。
                         # 疑似置顶推文导致的时间乱序，跳过但不中断滚动
                         # 控制当前循环或占位分支的执行。
                         continue
                     # 设置或更新本行涉及的变量值。
                     old_date_streak += 1
-                    # 保留原有说明注释。
                     # 两条连续旧推文才早停，容忍一条算法插入/时间乱序。
                     # 根据条件决定后续执行分支。
                     if old_date_streak >= 2:
@@ -1803,7 +1705,6 @@ class SeleniumScraper:
                     # 控制当前循环或占位分支的执行。
                     continue
 
-# 空行，用于分隔相邻代码块。
 
                 # 根据条件决定后续执行分支。
                 if expected_author:
@@ -1816,7 +1717,6 @@ class SeleniumScraper:
                         # 控制当前循环或占位分支的执行。
                         continue
 
-# 空行，用于分隔相邻代码块。
 
                 # 根据条件决定后续执行分支。
                 if any_words_filter and not matches_any_words(
@@ -1829,9 +1729,7 @@ class SeleniumScraper:
                     # 控制当前循环或占位分支的执行。
                     continue
 
-# 空行，用于分隔相邻代码块。
 
-                # 保留原有说明注释。
                 # X 搜索只负责召回候选项；最终仍在本地执行严格相关性审核。
                 # 根据条件决定后续执行分支。
                 if relevance_audit and not matches_xinjiang(data.get("text", "")):
@@ -1840,9 +1738,7 @@ class SeleniumScraper:
                     # 控制当前循环或占位分支的执行。
                     continue
 
-# 空行，用于分隔相邻代码块。
 
-                # 保留原有说明注释。
                 # 关键词在时间判断之后处理。
                 # 根据条件决定后续执行分支。
                 if keyword_filter and not matches_xinjiang(data.get("text", "")):
@@ -1851,19 +1747,16 @@ class SeleniumScraper:
                     # 控制当前循环或占位分支的执行。
                     continue
 
-# 空行，用于分隔相邻代码块。
 
                 # 将当前结果追加到列表或集合。
                 collected.append(data)
                 # 执行当前步骤的业务处理。
                 self.tweet_ids.add(data["id"])
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             current_unique = len(collected)
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             if current_unique >= target_count:
@@ -1872,7 +1765,6 @@ class SeleniumScraper:
                 # 控制当前循环或占位分支的执行。
                 break
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             if getattr(self, '_stop_early', False):
@@ -1881,11 +1773,8 @@ class SeleniumScraper:
                 # 控制当前循环或占位分支的执行。
                 break
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 停滞判断依据"本轮是否扫描到任何新推文"（无论匹配与否），
-            # 保留原有说明注释。
             # 而不是只看匹配到的数量，避免因连续出现不相关推文而提前停止
             # 根据条件决定后续执行分支。
             if new_seen_this_round == 0:
@@ -1906,13 +1795,9 @@ class SeleniumScraper:
                       # 执行当前步骤的业务处理。
                       f"本轮新扫描 {new_seen_this_round} 条)")
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 滚动本身不是新的 HTTP 导航，不再套用 8~15 秒的导航限流。
-            # 保留原有说明注释。
             # 按视口小步滚动，避免直接跳到 document.body.scrollHeight
-            # 保留原有说明注释。
             # 跳过 X 虚拟列表中尚未进入 DOM 的推文。
             # 设置或更新本行涉及的变量值。
             multiplier = 1.5 if stale_count >= 2 else 0.85
@@ -1927,21 +1812,17 @@ class SeleniumScraper:
             # 执行当前步骤的业务处理。
             time.sleep(self.scroll_pause)
 
-# 空行，用于分隔相邻代码块。
 
         # 将本函数的计算结果返回给调用处。
         return collected
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 页面导航（带重试） -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _navigate(self, url, label="页面", max_retries=None):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """安全导航到指定 URL，带超时重试。"""
         # 根据条件决定后续执行分支。
         if max_retries is None:
@@ -1998,16 +1879,13 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return False
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 抓取方法 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def fetch_tweet(self, tweet_id):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """获取单条推文详情。"""
         # 设置或更新本行涉及的变量值。
         tweet_id = self._validate_tweet_id(tweet_id)
@@ -2016,7 +1894,6 @@ class SeleniumScraper:
         # 输出运行提示、进度或错误信息。
         print(f"正在访问: {url}")
 
-# 空行，用于分隔相邻代码块。
 
         # 执行当前步骤的业务处理。
         self.rate_limiter.wait(label="获取推文")
@@ -2027,7 +1904,6 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
         # 开始可能抛出异常的受保护操作。
         try:
@@ -2044,7 +1920,6 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return []
 
-# 空行，用于分隔相邻代码块。
 
         # 执行当前步骤的业务处理。
         self._expand_visible_tweet_texts()
@@ -2057,7 +1932,6 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return []
 
-# 空行，用于分隔相邻代码块。
 
         # 读取字典或配置中的对应值。
         tweet_data = next((item for item in batch if item.get("id") == tweet_id), None)
@@ -2084,13 +1958,12 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return []
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def fetch_user_timeline(self, screen_name, count=20, since_date=None, until_date=None,
                             # 设置或更新本行涉及的变量值。
                             keyword_filter=False):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """获取指定用户的最新推文。"""
         # 设置或更新本行涉及的变量值。
         screen_name = self._validate_screen_name(screen_name)
@@ -2119,14 +1992,12 @@ class SeleniumScraper:
         # 输出运行提示、进度或错误信息。
         print(f"目标: {count} 条推文")
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if not self._load_profile_stats(screen_name):
             # 将本函数的计算结果返回给调用处。
             return []
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         tweets = self._scroll_to_load(
@@ -2141,7 +2012,6 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         self.got_count += len(tweets)
@@ -2154,11 +2024,10 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return tweets
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _load_profile_stats(self, screen_name):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """访问账号主页并在滚动前保存 Profile 统计。"""
         # 设置或更新本行涉及的变量值。
         screen_name = self._validate_screen_name(screen_name)
@@ -2172,14 +2041,12 @@ class SeleniumScraper:
             return False
         # 执行当前步骤的业务处理。
         self._wait_for_page_ready()
-        # 保留原有说明注释。
         # Profile 统计位于页面顶部，滚动后会被 X 的虚拟 DOM 移除。
         # 设置或更新本行涉及的变量值。
         self._last_profile_stats = self._get_profile_stats(screen_name)
         # 将本函数的计算结果返回给调用处。
         return True
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def fetch_account_advanced_search(
@@ -2199,7 +2066,7 @@ class SeleniumScraper:
         load_profile=True,
     # 结束上一行开始的数据结构或表达式。
     ):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """用 X 高级搜索抓取指定账号、日期范围和任一关键词命中的帖子。"""
         # 设置或更新本行涉及的变量值。
         screen_name = self._validate_screen_name(screen_name)
@@ -2228,7 +2095,6 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"正在使用 X 高级搜索抓取 @{screen_name}")
@@ -2241,7 +2107,6 @@ class SeleniumScraper:
         # 输出运行提示、进度或错误信息。
         print(f"目标: {count} 条推文")
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if load_profile and not self._load_profile_stats(screen_name):
@@ -2250,7 +2115,6 @@ class SeleniumScraper:
             # 输出运行提示、进度或错误信息。
             print("  ⚠ Profile 统计读取失败，继续执行高级搜索")
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         encoded_query = quote_plus(query)
@@ -2265,7 +2129,6 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         tweets = self._scroll_to_load(
@@ -2292,11 +2155,10 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return tweets
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def fetch_search_tweets(self, query, count=20, product="Latest"):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """根据关键词搜索推文。"""
         # 根据条件决定后续执行分支。
         if count <= 0:
@@ -2309,7 +2171,6 @@ class SeleniumScraper:
         # 输出运行提示、进度或错误信息。
         print(f"正在搜索: \"{query}\" (类型: {product}, 目标: {count} 条)")
 
-# 空行，用于分隔相邻代码块。
 
         # 执行当前步骤的业务处理。
         self.rate_limiter.wait(label="搜索")
@@ -2320,7 +2181,6 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         tweets = self._scroll_to_load(count, label="搜索")
@@ -2331,18 +2191,15 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return tweets
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 评论 & 子评论抓取 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _is_direct_reply(candidate, parent_author):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """只在页面明确标注候选帖回复了目标作者时认定归属。"""
         # 设置或更新本行涉及的变量值。
         expected = str(parent_author or "").strip().lstrip("@").casefold()
@@ -2363,13 +2220,12 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return expected in reply_handles
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _select_conversation_items(candidates, target_id, target_author, max_items=1000):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """从帖子详情页中保留对话链前后文、直接回复和子回复。
 
         X 详情页中目标帖之前的帖子是对话前文，目标帖之后、
@@ -2392,7 +2248,6 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return []
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         expected = str(target_author or "").strip().lstrip("@").casefold()
@@ -2413,7 +2268,6 @@ class SeleniumScraper:
                 # 控制当前循环或占位分支的执行。
                 continue
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             copy = dict(item)
@@ -2452,13 +2306,12 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return selected
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _fetch_comments_for_tweet(self, tweet_url, max_comments=20, max_depth=1,
                                   # 设置或更新本行涉及的变量值。
                                   current_depth=0, _visited=None):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """获取指定推文的所有评论及子评论（递归）。
 
         Args:
@@ -2478,7 +2331,6 @@ class SeleniumScraper:
             # 主动抛出异常以中止无效流程。
             raise ValueError("max_depth 不能小于 0")
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         parsed = urlparse(tweet_url)
@@ -2495,7 +2347,6 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         target_id = id_match.group(1)
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if _visited is None:
@@ -2508,7 +2359,6 @@ class SeleniumScraper:
         # 执行当前步骤的业务处理。
         _visited.add(target_id)
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         all_comments = []
@@ -2523,9 +2373,7 @@ class SeleniumScraper:
             # 执行当前步骤的业务处理。
             self._wait_for_page_ready()
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 等待评论加载
             # 开始可能抛出异常的受保护操作。
             try:
@@ -2540,7 +2388,6 @@ class SeleniumScraper:
                 # 将本函数的计算结果返回给调用处。
                 return all_comments
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             initial_batch = self._extract_tweets_batch()
@@ -2561,11 +2408,8 @@ class SeleniumScraper:
                 # 将本函数的计算结果返回给调用处。
                 return all_comments
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 多扫描一些候选项，保留目标帖的对话链前后文、
-            # 保留原有说明注释。
             # 直接回复及二、三级回复，并在推荐区标题处停止。
             # 设置或更新本行涉及的变量值。
             candidate_target = max(max_comments * 3, max_comments + 5)
@@ -2580,7 +2424,6 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             )
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             conversation_items = self._select_conversation_items(
@@ -2597,14 +2440,11 @@ class SeleniumScraper:
                 # 将当前结果追加到列表或集合。
                 all_comments.append(c)
 
-# 空行，用于分隔相邻代码块。
 
             # 输出运行提示、进度或错误信息。
             print(f"    对话链过滤：保留 {len(conversation_items)} 条前后文/回复，排除推广和推荐区")
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 递归获取子评论
             # 根据条件决定后续执行分支。
             if current_depth < max_depth:
@@ -2649,23 +2489,20 @@ class SeleniumScraper:
                         # 输出运行提示、进度或错误信息。
                         print(f"      → 获取 {len(sub_comments)} 条子评论")
 
-# 空行，用于分隔相邻代码块。
 
         # 捕获并处理指定的异常情况。
         except Exception as e:
             # 输出运行提示、进度或错误信息。
             print(f"  ⚠ 获取评论时出错: {e}")
 
-# 空行，用于分隔相邻代码块。
 
         # 将本函数的计算结果返回给调用处。
         return all_comments
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def fetch_comments_for_posts(self, posts, max_comments=None, max_depth=None):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """进入有回复的帖子详情页，抓取实际可见评论并回填实际数量。"""
         # 根据条件决定后续执行分支。
         if max_comments is None:
@@ -2680,7 +2517,6 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         max_depth = max(0, min(int(max_depth), 3))
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         all_comments = []
@@ -2697,7 +2533,6 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
         # 遍历集合中的元素并逐项处理。
         for index, post in enumerate(posts, start=1):
@@ -2710,7 +2545,6 @@ class SeleniumScraper:
                 # 控制当前循环或占位分支的执行。
                 continue
 
-# 空行，用于分隔相邻代码块。
 
             # 读取字典或配置中的对应值。
             tweet_url = post.get("tweet_url", "")
@@ -2721,7 +2555,6 @@ class SeleniumScraper:
                 # 控制当前循环或占位分支的执行。
                 continue
 
-# 空行，用于分隔相邻代码块。
 
             # 输出运行提示、进度或错误信息。
             print(
@@ -2742,7 +2575,6 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             )
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             actual_for_post = []
@@ -2781,7 +2613,6 @@ class SeleniumScraper:
                 # 将当前结果追加到列表或集合。
                 actual_for_post.append(comment)
 
-# 空行，用于分隔相邻代码块。
 
             # 设置或更新本行涉及的变量值。
             post["actual_comment_count"] = len(actual_for_post)
@@ -2796,14 +2627,12 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             )
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"✓ 评论核对完成：共抓取 {len(all_comments)} 条唯一评论")
         # 将本函数的计算结果返回给调用处。
         return all_comments
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def fetch_report(self, screen_name, since_date, until_date=None,
@@ -2811,9 +2640,8 @@ class SeleniumScraper:
                      replies_per_tweet=20, max_comment_depth=1,
                      # 设置或更新本行涉及的变量值。
                      use_advanced_search=True, any_words=None):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """一站式报告。返回 (posts, comments, following, followers)。"""
-        # 保留原有说明注释。
         # 第一步：优先使用服务器端高级搜索缩小账号、关键词和日期范围。
         # 输出运行提示、进度或错误信息。
         print(f"\n{'='*40}")
@@ -2858,16 +2686,13 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             )
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 提取 Profile 统计数据
         # 执行当前步骤的业务处理。
         following, followers = getattr(self, "_last_profile_stats", ("", ""))
         # 输出运行提示、进度或错误信息。
         print(f"  Profile: Following={following}, Followers={followers}")
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if not posts:
@@ -2876,14 +2701,11 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return [], [], following, followers
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"\n✓ 第一步完成：获取 {len(posts)} 条新疆相关推文")
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 第二步：仅对有回复的帖子进入详情页，抓取实际可见评论。
         # 输出运行提示、进度或错误信息。
         print(f"\n{'='*40}")
@@ -2892,7 +2714,6 @@ class SeleniumScraper:
         # 输出运行提示、进度或错误信息。
         print(f"{'='*40}")
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         all_comments = self.fetch_comments_for_posts(
@@ -2905,25 +2726,21 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"\n✓ 第二步完成：共获取 {len(all_comments)} 条评论")
         # 将本函数的计算结果返回给调用处。
         return posts, all_comments, following, followers
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 数据输出 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _fmt_time_posts(iso_str):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """ISO 8601 UTC → Posts 格式: YYYY.M.DD (CST)"""
         # 根据条件决定后续执行分支。
         if not iso_str:
@@ -2931,7 +2748,6 @@ class SeleniumScraper:
             return ""
         # 开始可能抛出异常的受保护操作。
         try:
-            # 保留原有说明注释。
             # Parse ISO 8601
             # 设置或更新本行涉及的变量值。
             dt_str = iso_str.replace("Z", "+00:00")
@@ -2939,7 +2755,6 @@ class SeleniumScraper:
             from datetime import timezone as tz
             # 设置或更新本行涉及的变量值。
             dt = datetime.fromisoformat(dt_str)
-            # 保留原有说明注释。
             # Convert to CST (UTC+8)
             # 设置或更新本行涉及的变量值。
             cst = tz(timedelta(hours=8))
@@ -2952,13 +2767,12 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return iso_str[:10].replace("-", ".") if len(iso_str) >= 10 else iso_str
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _fmt_time_comments(iso_str):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """ISO 8601 UTC → 评论格式: YYYY.M.DD HH:MM (CST)"""
         # 根据条件决定后续执行分支。
         if not iso_str:
@@ -2983,13 +2797,12 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return iso_str[:16].replace("-", ".").replace("T", " ") if len(iso_str) >= 16 else iso_str
 
-# 空行，用于分隔相邻代码块。
 
     # 应用装饰器以调整后续定义的行为。
     @staticmethod
     # 定义可复用的处理函数。
     def _ensure_at(text):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """确保字符串以 @ 开头"""
         # 根据条件决定后续执行分支。
         if not text:
@@ -2998,15 +2811,24 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return f"@{text.lstrip('@')}"
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _get_profile_stats(self, screen_name):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """从用户主页提取 Following / Followers 数。"""
         # 开始可能抛出异常的受保护操作。
         try:
-            # 设置或更新本行涉及的变量值。
+            # 以下说明按脚本执行顺序对应主页统计 JavaScript；实际脚本保持原样。
+            # 创建关注数和粉丝数结果对象。
+            # 查询关注、粉丝及认证粉丝入口链接。
+            # 遍历统计链接并读取 href 与可见文本。
+            # 从可见文本提取带千位符或缩写单位的数值。
+            # 普通 following 链接写入关注数。
+            # verified_followers 或 followers 链接写入粉丝数。
+            # 任一统计值缺失时启用页面全文备用匹配。
+            # 从页面正文分别匹配中英文关注数和粉丝数。
+            # 命中备用结果时回填对应字段。
+            # 将统计对象序列化为 JSON 返回 Python。
             js = r"""
             var stats = {following: '', followers: ''};
             var links = document.querySelectorAll(
@@ -3048,11 +2870,10 @@ class SeleniumScraper:
             # 将本函数的计算结果返回给调用处。
             return "", ""
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def export_posts_csv(self, data, output_path, profile_following="", profile_followers=""):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """导出帖子 CSV，列格式与 24-25年知情代理人涉疆数据.xlsx 一致。
 
         列: ID, name, Following, Followers, time, text, translation,
@@ -3069,7 +2890,6 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         ]
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         rows = []
@@ -3080,9 +2900,7 @@ class SeleniumScraper:
             # 读取字典或配置中的对应值。
             name = d.get("author_name", "")
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 只有目标用户本人的帖子才填 Following/Followers
             # 设置或更新本行涉及的变量值。
             following = ""
@@ -3095,18 +2913,14 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 followers = profile_followers
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # 媒体列
             # 读取字典或配置中的对应值。
             media_count = d.get("media_count", 0)
             # 设置或更新本行涉及的变量值。
             media_str = "/" if media_count == 0 else str(media_count)
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # tag 列：第一个外部链接 或 /
             # 读取字典或配置中的对应值。
             urls_str = d.get("urls", "")
@@ -3121,7 +2935,6 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 tag = "/"
 
-# 空行，用于分隔相邻代码块。
 
             # 将当前结果追加到列表或集合。
             rows.append({
@@ -3162,7 +2975,6 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             })
 
-# 空行，用于分隔相邻代码块。
 
         # 使用上下文管理器并在结束时自动清理资源。
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -3179,21 +2991,18 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             ])
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"\n✓ 帖子结果已保存到: {output_path}（{len(rows)} 条）")
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def export_comments_csv(self, data, output_path):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """按研究表格的固定顺序导出对话链内容。"""
         # 设置或更新本行涉及的变量值。
         fieldnames = ["序号", "account", "tweet_id", "link", "time", "text", "贴主ID"]
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         rows = []
@@ -3220,7 +3029,6 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             })
 
-# 空行，用于分隔相邻代码块。
 
         # 使用上下文管理器并在结束时自动清理资源。
         with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
@@ -3237,16 +3045,14 @@ class SeleniumScraper:
             # 结束上一行开始的数据结构或表达式。
             ])
 
-# 空行，用于分隔相邻代码块。
 
         # 输出运行提示、进度或错误信息。
         print(f"\n✓ 评论结果已保存到: {output_path}（{len(rows)} 条）")
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _make_output_path(self, query, suffix=""):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """生成输出文件路径。"""
         # 设置或更新本行涉及的变量值。
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3265,11 +3071,10 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return os.path.join(self.output_dir, filename)
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def _make_comments_output_path(self, query):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """在独立 comments 目录生成评论文件路径。"""
         # 设置或更新本行涉及的变量值。
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3282,21 +3087,17 @@ class SeleniumScraper:
         # 将本函数的计算结果返回给调用处。
         return os.path.join(self.comments_dir, f"{safe_query}_comments_{ts}.csv")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ----- 调度入口 -----
 
-# 空行，用于分隔相邻代码块。
 
     # 定义可复用的处理函数。
     def start(self, cli_args):
-        # 执行当前步骤的业务处理。
+        # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
         """根据 CLI 参数调度抓取任务。"""
         # 执行当前步骤的业务处理。
         self.login()
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         mode = cli_args.mode
@@ -3309,7 +3110,6 @@ class SeleniumScraper:
         # 设置或更新本行涉及的变量值。
         query = ""
 
-# 空行，用于分隔相邻代码块。
 
         # 开始可能抛出异常的受保护操作。
         try:
@@ -3322,7 +3122,6 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 data = self.fetch_tweet(tweet_id)
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             elif mode == "timeline":
@@ -3345,7 +3144,6 @@ class SeleniumScraper:
                 # 结束上一行开始的数据结构或表达式。
                 )
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             elif mode == "search":
@@ -3358,7 +3156,6 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 data = self.fetch_search_tweets(query, count, product)
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             elif mode == "account-search":
@@ -3389,7 +3186,6 @@ class SeleniumScraper:
                 # 结束上一行开始的数据结构或表达式。
                 )
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             elif mode == "replies":
@@ -3416,7 +3212,6 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 data = original + replies
 
-# 空行，用于分隔相邻代码块。
 
             # 根据条件决定后续执行分支。
             elif mode == "report":
@@ -3447,7 +3242,6 @@ class SeleniumScraper:
                 # 设置或更新本行涉及的变量值。
                 query = screen_name
 
-# 空行，用于分隔相邻代码块。
 
                 # 续写当前数据结构、参数列表或表达式。
                 posts, comments, following, followers = self.fetch_report(
@@ -3468,9 +3262,7 @@ class SeleniumScraper:
                 # 结束上一行开始的数据结构或表达式。
                 )
 
-# 空行，用于分隔相邻代码块。
 
-                # 保留原有说明注释。
                 # 输出帖子 CSV（列对齐 24-25年知情代理人涉疆数据.xlsx）
                 # 设置或更新本行涉及的变量值。
                 post_path = getattr(cli_args, "output", None)
@@ -3483,16 +3275,13 @@ class SeleniumScraper:
                     # 执行当前步骤的业务处理。
                     self.export_posts_csv(posts, post_path, following, followers)
 
-# 空行，用于分隔相邻代码块。
 
-                # 保留原有说明注释。
                 # 评论始终放在独立 comments 目录；即使为 0 条也保留表头。
                 # 设置或更新本行涉及的变量值。
                 comment_path = self._make_comments_output_path(query)
                 # 执行当前步骤的业务处理。
                 self.export_comments_csv(comments, comment_path)
 
-# 空行，用于分隔相邻代码块。
 
                 # 续写当前数据结构、参数列表或表达式。
                 print_summary(
@@ -3513,9 +3302,7 @@ class SeleniumScraper:
                 # 将本函数的计算结果返回给调用处。
                 return
 
-# 空行，用于分隔相邻代码块。
 
-            # 保留原有说明注释。
             # timeline/account-search 默认自动核对有回复帖子的实际评论。
             # 根据条件决定后续执行分支。
             if mode in {"timeline", "account-search"} and data:
@@ -3564,7 +3351,6 @@ class SeleniumScraper:
                     # 设置或更新本行涉及的变量值。
                     comment_output_path = self._make_comments_output_path(query)
 
-# 空行，用于分隔相邻代码块。
 
         # 捕获并处理指定的异常情况。
         except KeyboardInterrupt:
@@ -3595,9 +3381,7 @@ class SeleniumScraper:
                 # 输出运行提示、进度或错误信息。
                 print("浏览器已关闭")
 
-# 空行，用于分隔相邻代码块。
 
-        # 保留原有说明注释。
         # 输出
         # 设置或更新本行涉及的变量值。
         output_path = getattr(cli_args, "output", None)
@@ -3606,7 +3390,6 @@ class SeleniumScraper:
             # 设置或更新本行涉及的变量值。
             output_path = self._make_output_path(query, mode)
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if data:
@@ -3621,14 +3404,12 @@ class SeleniumScraper:
                 # 执行当前步骤的业务处理。
                 self.export_posts_csv(data, output_path)
 
-# 空行，用于分隔相邻代码块。
 
         # 根据条件决定后续执行分支。
         if comment_output_path:
             # 执行当前步骤的业务处理。
             self.export_comments_csv(comments, comment_output_path)
 
-# 空行，用于分隔相邻代码块。
 
         # 设置或更新本行涉及的变量值。
         displayed_output = output_path
@@ -3637,7 +3418,6 @@ class SeleniumScraper:
             # 设置或更新本行涉及的变量值。
             displayed_output = f"{output_path}\n{' '*12}+ {comment_output_path}"
 
-# 空行，用于分隔相邻代码块。
 
         # 续写当前数据结构、参数列表或表达式。
         print_summary(
@@ -3656,23 +3436,17 @@ class SeleniumScraper:
         # 结束上一行开始的数据结构或表达式。
         )
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
-# 保留原有说明注释。
 # ============================================================
-# 保留原有说明注释。
 #  CLI 入口
-# 保留原有说明注释。
 # ============================================================
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def generate_config(output_path="config.json"):
-    # 执行当前步骤的业务处理。
+    # 下方文档字符串说明当前类或函数的用途、参数和返回结果。
     """生成模板配置文件。"""
     # 设置或更新本行涉及的变量值。
     template = {
@@ -3751,7 +3525,6 @@ def generate_config(output_path="config.json"):
     # 结束上一行开始的数据结构或表达式。
     }
 
-# 空行，用于分隔相邻代码块。
 
     # 根据条件决定后续执行分支。
     if os.path.exists(output_path):
@@ -3766,14 +3539,12 @@ def generate_config(output_path="config.json"):
             # 将本函数的计算结果返回给调用处。
             return
 
-# 空行，用于分隔相邻代码块。
 
     # 使用上下文管理器并在结束时自动清理资源。
     with open(output_path, "w", encoding="utf-8") as f:
         # 解析或写入 JSON 配置与数据。
         json.dump(template, f, ensure_ascii=False, indent=2)
 
-# 空行，用于分隔相邻代码块。
 
     # 输出运行提示、进度或错误信息。
     print(f"✓ 配置文件模板已生成: {output_path}")
@@ -3798,10 +3569,8 @@ def generate_config(output_path="config.json"):
     # 输出运行提示、进度或错误信息。
     print("然后运行: python3 x_scraper.py tweet <推文ID>")
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 定义可复用的处理函数。
 def main():
@@ -3826,7 +3595,6 @@ def main():
     # 结束上一行开始的数据结构或表达式。
     )
 
-# 空行，用于分隔相邻代码块。
 
     # 续写当前数据结构、参数列表或表达式。
     parser.add_argument(
@@ -3849,7 +3617,6 @@ def main():
     # 结束上一行开始的数据结构或表达式。
     )
 
-# 空行，用于分隔相邻代码块。
 
     # 设置或更新本行涉及的变量值。
     subparsers = parser.add_subparsers(
@@ -3864,9 +3631,7 @@ def main():
     # 结束上一行开始的数据结构或表达式。
     )
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- tweet ----
     # 设置或更新本行涉及的变量值。
     tweet_parser = subparsers.add_parser("tweet", help="根据推文 ID 获取单条推文详情")
@@ -3875,9 +3640,7 @@ def main():
     # 执行当前步骤的业务处理。
     tweet_parser.add_argument("-o", "--output", help="输出文件路径")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- timeline ----
     # 设置或更新本行涉及的变量值。
     timeline_parser = subparsers.add_parser("timeline", help="获取指定用户的最新推文")
@@ -3914,9 +3677,7 @@ def main():
     # 执行当前步骤的业务处理。
     timeline_parser.add_argument("-o", "--output", help="输出文件路径")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- search ----
     # 设置或更新本行涉及的变量值。
     search_parser = subparsers.add_parser("search", help="根据关键词搜索推文")
@@ -3935,9 +3696,7 @@ def main():
     # 执行当前步骤的业务处理。
     search_parser.add_argument("-o", "--output", help="输出文件路径")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- account-search ----
     # 设置或更新本行涉及的变量值。
     account_search_parser = subparsers.add_parser(
@@ -4004,9 +3763,7 @@ def main():
     # 执行当前步骤的业务处理。
     account_search_parser.add_argument("-o", "--output", help="输出文件路径")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- replies ----
     # 设置或更新本行涉及的变量值。
     replies_parser = subparsers.add_parser("replies", help="获取指定推文的回复列表（含原帖）")
@@ -4017,9 +3774,7 @@ def main():
     # 执行当前步骤的业务处理。
     replies_parser.add_argument("-o", "--output", help="输出文件路径")
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- config ----
     # 设置或更新本行涉及的变量值。
     config_parser = subparsers.add_parser("config", help="生成模板配置文件")
@@ -4032,9 +3787,7 @@ def main():
     # 结束上一行开始的数据结构或表达式。
     )
 
-# 空行，用于分隔相邻代码块。
 
-    # 保留原有说明注释。
     # ---- report ----
     # 设置或更新本行涉及的变量值。
     report_parser = subparsers.add_parser(
@@ -4105,12 +3858,10 @@ def main():
     # 执行当前步骤的业务处理。
     report_parser.add_argument("-o", "--output", help="推文输出文件路径")
 
-# 空行，用于分隔相邻代码块。
 
     # 设置或更新本行涉及的变量值。
     args = parser.parse_args()
 
-# 空行，用于分隔相邻代码块。
 
     # 根据条件决定后续执行分支。
     if not args.mode:
@@ -4121,7 +3872,6 @@ def main():
         # 执行当前步骤的业务处理。
         sys.exit(1)
 
-# 空行，用于分隔相邻代码块。
 
     # 根据条件决定后续执行分支。
     if args.mode == "config":
@@ -4132,12 +3882,10 @@ def main():
         # 将本函数的计算结果返回给调用处。
         return
 
-# 空行，用于分隔相邻代码块。
 
     # 执行当前步骤的业务处理。
     print_banner()
 
-# 空行，用于分隔相邻代码块。
 
     # 设置或更新本行涉及的变量值。
     config = get_config(args.config)
@@ -4146,10 +3894,8 @@ def main():
     # 执行当前步骤的业务处理。
     scraper.start(args)
 
-# 空行，用于分隔相邻代码块。
 
 
-# 空行，用于分隔相邻代码块。
 
 # 根据条件决定后续执行分支。
 if __name__ == "__main__":
