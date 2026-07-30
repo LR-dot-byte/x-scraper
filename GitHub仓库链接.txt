@@ -1,0 +1,13 @@
+GitHub 仓库地址：
+https://github.com/LR-dot-byte/x-scraper
+
+默认分支：main
+
+说明：
+本项目文件夹内保留了完整的 .git 本地版本记录；GitHub 仓库 main 分支与本地 main 分支同步，可用于查看每次提交的名称、内容和修改过程。
+
+查看本地提交记录：
+git log --oneline
+
+查看 GitHub 提交记录：
+打开上述链接，进入 Commits（提交记录）页面。
